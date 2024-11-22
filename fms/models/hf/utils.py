@@ -3,6 +3,7 @@ from typing import Any, Dict, Optional, Union
 
 import torch
 import torch.nn as nn
+from torch.distributed._tensor import DeviceMesh, Shard, distribute_tensor
 from torch._C._distributed_c10d import ProcessGroup
 from transformers import (  # type: ignore
     AutoConfig,
@@ -107,7 +108,7 @@ def mask_2d_to_3d_bidirectional(
     return mask_encoder.unsqueeze(1) == mask_decoder.unsqueeze(2)
 
 
-def to_hf_api(model: nn.Module, **override_config_kwargs) -> "HFModelArchitecture":  # type: ignore
+def to_hf_api(model: nn.Module,device_mesh: Optional[DeviceMesh] = None, shard_dim: Optional[int] = None, **override_config_kwargs) -> "HFModelArchitecture":  # type: ignore
     """Wrap an FMS model, converting its API to one of and Huggingface model
 
     Parameters
@@ -131,7 +132,11 @@ def to_hf_api(model: nn.Module, **override_config_kwargs) -> "HFModelArchitectur
         raise ValueError(
             f"{model.__class__.__name__} is not one of {_fms_to_hf_adapt_map.keys()}"
         )
-
+    
+    if device_mesh and shard_dim is not None:
+        model = distribute_tensor(
+            model, device_mesh, placements=[Shard(shard_dim)]
+        )
     hf_adapted_cls = _fms_to_hf_adapt_map[model_type]
     return hf_adapted_cls.from_fms_model(model, **override_config_kwargs)
 
@@ -245,6 +250,8 @@ def as_fms_model(
     checkpoint_sharding: Optional[str] = None,
     group: Optional[ProcessGroup] = None,
     initialize_model_with_weights: bool = True,
+    device_mesh: Optional[DeviceMesh] = None,
+    shard_dim: Optional[int] = None,
 ) -> nn.Module:
     """
     get an FMS model from a huggingface checkpoint
@@ -273,7 +280,7 @@ def as_fms_model(
         model_id_or_path, download_weights=initialize_model_with_weights
     )
 
-    return get_model(
+    model = get_model(
         source="hf",
         device_type=device_type,
         data_type=data_type,
@@ -282,3 +289,8 @@ def as_fms_model(
         group=group,
         **get_model_kwargs,
     )
+    if device_mesh and shard_dim is not None:
+        model = distribute_tensor(
+            model, device_mesh, placements=[Shard(shard_dim)]
+        )
+    return model
