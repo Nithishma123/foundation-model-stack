@@ -16,7 +16,8 @@ from transformers.utils import ModelOutput
 
 from fms.modules.head import MLPClassificationHead
 from fms.utils.activation import str_to_activation
-
+from torch.distributed.tensor.parallel import DeviceMesh, Shard
+from torch.distributed.tensor import distribute_tensor
 
 class LMHeadMixin:
     """
@@ -35,6 +36,7 @@ class LMHeadMixin:
         config: PretrainedConfig,
         lm_head: Optional[nn.Module] = None,
         _lm_head_params: Optional[Dict[str, Any]] = None,
+        device_mesh: Optional[DeviceMesh] = None,
         *args,
         **kwargs,
     ):
@@ -62,6 +64,7 @@ class LMHeadMixin:
         LMHeadMixin
             a new LMHeadMixin
         """
+        self.device_mesh = device_mesh
         self.config = config
         # if lm head was already given, we do not need to create it, otherwise we create a fresh lm_head
         # lm_head is not None when a subclass of HFModelArchitecture provides a model with an lm_head
@@ -69,7 +72,13 @@ class LMHeadMixin:
             lm_head = self._get_empty_lm_head(
                 **({} if _lm_head_params is None else _lm_head_params)
             )
-
+            if self.device_mesh is not None:
+                lm_head.weight = distribute_tensor(
+                    lm_head.weight,
+                    device_mesh=self.device_mesh,
+                    placements=[Shard(0)],  # Shard along the first dimension
+                )
+        self.lm_head = lm_head
         super().__init__(config=config, lm_head=lm_head, *args, **kwargs)
 
     @abc.abstractmethod
@@ -186,7 +195,14 @@ class LMHeadModelLMHeadMixin(LMHeadMixin):
         super().__init__(_lm_head_params={"bias": bias}, *args, **kwargs)
 
     def _get_empty_lm_head(self, bias: bool) -> nn.Module:
-        return nn.Linear(self.config.hidden_size, self.config.vocab_size, bias=bias)
+        lm_head = nn.Linear(self.config.hidden_size, self.config.vocab_size, bias=bias)
+        if self.device_mesh is not None:
+            lm_head.weight = distribute_tensor(
+                lm_head.weight,
+                device_mesh=self.device_mesh,
+                placements=[Shard(0)],
+            )
+        return lm_head
 
     def _compute_loss(self, prediction: torch.Tensor, labels: torch.Tensor) -> _Loss:
         loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
@@ -234,7 +250,14 @@ class ConditionalGenerationLMHeadMixin(LMHeadMixin):
         super().__init__(_lm_head_params={"bias": bias}, *args, **kwargs)
 
     def _get_empty_lm_head(self, bias: bool) -> nn.Module:
-        return nn.Linear(self.config.hidden_size, self.config.vocab_size, bias=bias)
+        lm_head = nn.Linear(self.config.hidden_size, self.config.vocab_size, bias=bias)
+        if self.device_mesh is not None:
+            lm_head.weight = distribute_tensor(
+                lm_head.weight,
+                device_mesh=self.device_mesh,
+                placements=[Shard(0)],
+            )
+        return lm_head
 
     def _compute_loss(self, prediction: torch.Tensor, labels: torch.Tensor) -> _Loss:
         loss_fn = nn.CrossEntropyLoss()
@@ -410,15 +433,29 @@ class MaskedLMHeadMixin(LMHeadMixin):
         )
 
     def get_output_embeddings(self):
-        return self.lm_head.head
+        if self.device_mesh is not None:
+            return distribute_tensor(
+                self.lm_head.weight,
+                device_mesh=self.device_mesh,
+                placements=[Shard(0)],
+        )
+        return self.lm_head
+
 
     def _get_empty_lm_head(self, activation_fn: str, norm_eps: float) -> nn.Module:
-        return MLPClassificationHead(
+        lm_head = MLPClassificationHead(
             self.config.hidden_size,
             self.config.vocab_size,
             activation_fn=str_to_activation(activation_fn),
             layer_norm=nn.LayerNorm(self.config.hidden_size, norm_eps),
         )
+        if self.device_mesh is not None:
+            lm_head.head.weight = distribute_tensor(
+                lm_head.head.weight,
+                device_mesh=self.device_mesh,
+                placements=[Shard(0)],
+            )
+        return lm_head
 
     def _compute_loss(self, prediction: torch.Tensor, labels: torch.Tensor) -> _Loss:
         loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
