@@ -15,6 +15,8 @@ from transformers.modeling_outputs import (
     Seq2SeqModelOutput,
 )
 from transformers.utils import ModelOutput, is_torch_fx_proxy
+from torch.distributed.tensor import distribute_tensor, DeviceMesh, Shard
+from torch.distributed.tensor.parallel import parallelize_tensor
 
 from fms.models.hf.utils import mask_2d_to_3d, mask_2d_to_3d_bidirectional
 
@@ -34,7 +36,7 @@ class _HFBase(PreTrainedModel):
     """
 
     def __init__(
-        self, model: nn.Module, config: PretrainedConfig, attention_mask_dim: int = 2
+        self, model: nn.Module, config: PretrainedConfig, attention_mask_dim: int = 2, shard_dim: Optional[int] = None,device_mesh: Optional[torch.distributed.tensor.DeviceMesh] = None
     ):
         super().__init__(config)
         self.main_input_name = "input_ids"
@@ -45,11 +47,15 @@ class _HFBase(PreTrainedModel):
 
         # the attention mask dim is used to send a proper mask to the underlying pytorch native module.
         self._attention_mask_dim = attention_mask_dim
+        self.shard_dim = shard_dim
+        self.device_mesh = device_mesh
 
     @abc.abstractmethod
     def set_input_embeddings(self, value: nn.Module):
         set_input_embeddings_method = getattr(self.model, "set_input_embeddings", None)
         if callable(set_input_embeddings_method):
+            if self.shard_dim is not None:
+                value = distribute_tensor(value, device_mesh=self.device_mesh, placements=[Shard(self.shard_dim)])
             self.model.set_input_embeddings(value)
         else:
             raise NotImplementedError("you must implement set_input_embeddings method")
@@ -76,7 +82,20 @@ class _HFBase(PreTrainedModel):
         attention_mask: torch.Tensor
             a 2d or 3d attention mask
         """
-        pass
+        if self.shard_dim is not None:
+            attention_mask = distribute_tensor(
+                attention_mask, device_mesh=self.device_mesh, placements=[Shard(self.shard_dim)]
+            )
+
+        hf_attention_mask = attention_mask
+        attention_mask = mask_2d_to_3d(hf_attention_mask)
+
+        # Ensure DTensor compatibility
+        if self.shard_dim is not None:
+            attention_mask = parallelize_tensor(
+                attention_mask, device_mesh=self.device_mesh, placements=[Shard(self.shard_dim)]
+            )
+        return attention_mask, hf_attention_mask
 
     def forward(
         self,
@@ -94,6 +113,9 @@ class _HFBase(PreTrainedModel):
             raise ValueError(
                 f"You cannot specify both input_ids and inputs_embeds at the same time"
             )
+        if self.shard_dim is not None and input_ids is not None:
+            input_ids = distribute_tensor(input_ids, device_mesh=self.device_mesh, placements=[Shard(self.shard_dim)])
+
 
         return_dict = (
             return_dict if return_dict is not None else self.config.use_return_dict
@@ -166,13 +188,13 @@ class HFEncoder(_HFBase):
     """
 
     def __init__(
-        self, model: nn.Module, config: PretrainedConfig, attention_mask_dim: int = 2
+        self, model: nn.Module, config: PretrainedConfig, attention_mask_dim: int = 2, shard_dim: Optional[int] = None, device_mesh: Optional[DeviceMesh] = None,
     ):
         # make sure the config is properly set
         encoder_config = copy.deepcopy(config)
         encoder_config.is_decoder = False
         encoder_config.is_encoder_decoder = False
-        super().__init__(model, encoder_config, attention_mask_dim)
+        super().__init__(model, encoder_config, attention_mask_dim, shard_dim=shard_dim,device_mesh=device_mesh)
 
     def forward(
         self,
@@ -225,6 +247,12 @@ class HFEncoder(_HFBase):
             if return_dict is False: return a tuple of all values in a BaseModelOutput dataclass from huggingface
         """
         # defined so HF can inspect it properly, used for FSDP purposes
+        if self.shard_dim is not None and self.device_mesh is not None and input_ids is not None:
+            input_ids = distribute_tensor(
+                input_ids,
+                device_mesh=self.device_mesh,
+                placements=[Shard(self.shard_dim)],
+            )
         return super().forward(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -316,13 +344,16 @@ class HFDecoder(_HFBase):
     """
 
     def __init__(
-        self, model: nn.Module, config: PretrainedConfig, attention_mask_dim: int = 2
+        self, model: nn.Module, config: PretrainedConfig, attention_mask_dim: int = 2, shard_dim: Optional[int] = None,
+        device_mesh: Optional[DeviceMesh] = None
     ):
         # make sure the config is properly set
         decoder_config = copy.deepcopy(config)
         decoder_config.is_decoder = True
         decoder_config.is_encoder_decoder = False
         super().__init__(model, decoder_config, attention_mask_dim)
+        self.shard_dim = shard_dim
+        self.device_mesh = device_mesh
 
     def forward(
         self,
@@ -409,6 +440,12 @@ class HFDecoder(_HFBase):
             if return_dict is True: return a BaseModelOutput dataclass from huggingface
             if return_dict is False: return a tuple of all values in a BaseModelOutput dataclass from huggingface
         """
+        if self.shard_dim is not None and self.device_mesh is not None and input_ids is not None:
+            input_ids = distribute_tensor(
+                input_ids,
+                device_mesh=self.device_mesh,
+                placements=[Shard(self.shard_dim)],
+            )
         return super().forward(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -535,9 +572,21 @@ class HFDecoder(_HFBase):
         **kwargs,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         is_cache_used_and_filled = use_cache and past_key_values is not None
-        return HFDecoderModelArchitecture._produce_decoder_attention_mask_from_hf(
-            attention_mask, is_cache_used_and_filled
+        attention_mask, hf_attention_mask = (
+            HFDecoderModelArchitecture._produce_decoder_attention_mask_from_hf(
+                attention_mask, is_cache_used_and_filled
+            )
         )
+
+        if self.shard_dim is not None and self.device_mesh is not None:
+            attention_mask = distribute_tensor(
+                attention_mask,
+                device_mesh=self.device_mesh,
+                placements=[Shard(self.shard_dim)],
+            )
+
+        return attention_mask, hf_attention_mask
+
 
 
 # this is a solution using metaclasses which performs a similar function to post init from dataclasses
@@ -578,6 +627,8 @@ class HFModelArchitecture(PreTrainedModel, metaclass=PostInitCaller):
         embedding: nn.Module,
         config: PretrainedConfig,
         lm_head: Optional[nn.Module] = None,
+        shard_dim: Optional[int] = None,
+        device_mesh: Optional[DeviceMesh] = None,
         *args,
         **kwargs,
     ):
@@ -596,6 +647,8 @@ class HFModelArchitecture(PreTrainedModel, metaclass=PostInitCaller):
         super().__init__(type(config).from_dict(config.to_dict()), *args, **kwargs)
         self.lm_head = lm_head
         self.embedding = embedding
+        self.shard_dim = shard_dim
+        self.device_mesh = device_mesh
 
     def __post_init__(self):
         """Huggingface performs a post initialization step in their models, this will handle that step"""
@@ -1121,6 +1174,15 @@ class HFDecoderModelArchitecture(HFModelArchitecture):
         """
         # forward pass of the decoder
         # encoder_outputs, attention, cross mask will come through kwargs if encoder-decoder model used
+        if self.device_mesh and self.shard_dim is not None:
+            if input_ids is not None:
+                input_ids = distribute_tensor(
+                    input_ids, self.device_mesh, placements=[Shard(self.shard_dim)]
+                )
+            if attention_mask is not None:
+                attention_mask = distribute_tensor(
+                    attention_mask, self.device_mesh, placements=[Shard(self.shard_dim)]
+                )
         output = self.decoder(
             input_ids=input_ids,
             past_key_values=past_key_values,
@@ -1299,6 +1361,8 @@ class HFEncoderModelArchitecture(HFModelArchitecture, _EncoderArchitectureMixin)
         encoder: HFEncoder,
         embedding: nn.Module,
         config: PretrainedConfig,
+        shard_dim: Optional[int] = None,
+        device_mesh: Optional[DeviceMesh] = None,
         *args,
         **kwargs,
     ):
@@ -1315,6 +1379,8 @@ class HFEncoderModelArchitecture(HFModelArchitecture, _EncoderArchitectureMixin)
         """
         super().__init__(embedding=embedding, config=config, *args, **kwargs)
         self.encoder = encoder
+        self.shard_dim = shard_dim
+        self.device_mesh = device_mesh
 
     def _set_gradient_checkpointing(self, module, value=False):
         if isinstance(module, HFEncoder):
@@ -1406,6 +1472,16 @@ class HFEncoderModelArchitecture(HFModelArchitecture, _EncoderArchitectureMixin)
             Seq2SeqLMOutput if loss was computed or an lm head exists
             Seq2SeqModelOutput if loss was not computed and no lm head exists
         """
+        if self.device_mesh and self.shard_dim is not None:
+            if input_ids is not None:
+                input_ids = distribute_tensor(
+                    input_ids, self.device_mesh, placements=[Shard(self.shard_dim)]
+                )
+            if attention_mask is not None:
+                attention_mask = distribute_tensor(
+                    attention_mask, self.device_mesh, placements=[Shard(self.shard_dim)]
+                )
+
         output = self.encoder(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -1447,6 +1523,8 @@ class HFEncoderDecoderModelArchitecture(
         decoder: HFDecoder,
         embedding: nn.Module,
         config: PretrainedConfig,
+        shard_dim: Optional[int] = None,
+        device_mesh: Optional[DeviceMesh] = None,
         *args,
         **kwargs,
     ):
@@ -1467,6 +1545,8 @@ class HFEncoderDecoderModelArchitecture(
             embedding=embedding, config=config, decoder=decoder, *args, **kwargs
         )
         self.encoder = encoder
+        self.shard_dim = shard_dim
+        self.device_mesh = device_mesh
 
     def get_encoder(self):
         return self.encoder
@@ -1631,6 +1711,28 @@ class HFEncoderDecoderModelArchitecture(
             attention_mask,
             encoder_outputs,
         )
+        if self.device_mesh and self.shard_dim is not None:
+            if input_ids is not None:
+                input_ids = distribute_tensor(
+                    input_ids, self.device_mesh, placements=[Shard(self.shard_dim)]
+                )
+            if attention_mask is not None:
+                attention_mask = distribute_tensor(
+                    attention_mask, self.device_mesh, placements=[Shard(self.shard_dim)]
+                )
+            if decoder_input_ids is not None:
+                decoder_input_ids = distribute_tensor(
+                    decoder_input_ids,
+                    self.device_mesh,
+                    placements=[Shard(self.shard_dim)],
+                )
+            if decoder_attention_mask is not None:
+                decoder_attention_mask = distribute_tensor(
+                    decoder_attention_mask,
+                    self.device_mesh,
+                    placements=[Shard(self.shard_dim)],
+                )
+
 
         # if encoder outputs is not given, we need to compute the encoder hidden state and attention mask
         if encoder_outputs is None:
