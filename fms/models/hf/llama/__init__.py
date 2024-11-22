@@ -1,10 +1,11 @@
 import os
-from typing import Union
+from typing import Union, Optional
 
 from fms.models.hf.llama.modeling_llama_hf import HFAdaptedLLaMAForCausalLM
+from torch.distributed._tensor import DeviceMesh
 
 
-def get_model(model_name_or_path: Union[str, os.PathLike]) -> HFAdaptedLLaMAForCausalLM:
+def get_model(model_name_or_path: Union[str, os.PathLike], device_mesh: Optional[DeviceMesh] = None,shard_dim: Optional[int] = None) -> HFAdaptedLLaMAForCausalLM:
     """
     Get a Huggingface adapted FMS model from an equivalent HF model
 
@@ -27,7 +28,7 @@ def get_model(model_name_or_path: Union[str, os.PathLike]) -> HFAdaptedLLaMAForC
 
     register_fms_models()
     hf_model = LlamaForCausalLM.from_pretrained(model_name_or_path)
-    fms_model = convert_hf_llama(hf_model).half()
+    fms_model = convert_hf_llama(hf_model, device_mesh, shard_dim).half()
     result_model: HFAdaptedLLaMAForCausalLM = HFAdaptedLLaMAForCausalLM.from_fms_model(
         fms_model,
         torch_dtype=torch.float16,
