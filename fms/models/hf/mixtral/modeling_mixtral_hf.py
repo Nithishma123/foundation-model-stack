@@ -2,6 +2,7 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
+from torch.distributed._tensor import distribute_tensor, DeviceMesh, Shard
 from transformers import PretrainedConfig
 from transformers.modeling_outputs import BaseModelOutputWithPastAndCrossAttentions
 
@@ -10,6 +11,10 @@ from fms.models.hf.mixtral.configuration_mixtral_hf import HFAdaptedMixtralConfi
 from fms.models.hf.modeling_hf_adapter import HFDecoder, HFDecoderModelArchitecture
 from fms.models.mixtral import Mixtral, MixtralHeadless
 
+
+
+device_mesh = DeviceMesh("cuda", torch.arange(torch.cuda.device_count()))
+placement = [Shard(0)]
 
 class HFAdaptedMixtralDecoder(HFDecoder):
     """Adapter for the Mixtral decoder"""
@@ -117,6 +122,12 @@ class HFAdaptedMixtralForCausalLM(LMHeadModelLMHeadMixin, HFAdaptedMixtralHeadle
     def _hf_model_from_fms(
         cls, model: Mixtral, config: HFAdaptedMixtralConfig
     ) -> "HFAdaptedMixtralForCausalLM":
+        embedding_weight = distribute_tensor(model.base_model.embedding.weight, device_mesh, placement)
+        model.base_model.embedding.weight = embedding_weight
+
+        lm_head_weight = distribute_tensor(model.head.weight, device_mesh, placement)
+        model.head.weight = lm_head_weight
+        
         return cls(
             config=config,
             decoder=model.base_model,
