@@ -42,6 +42,10 @@ class HFAdaptedMixtralConfig(PretrainedConfig):
         rope_base: float = 1000000.0,
         use_cache: bool = True,
         is_decoder: bool = True,
+        dtensor_device_mesh: Optional[list] = None,
+        dtensor_placements: Optional[list] = None,
+        enable_sequence_parallelism: bool = False,
+        sequence_parallel_shard_dim: int = 1,
         **kwargs,
     ):
         self.src_vocab_size = src_vocab_size
@@ -57,6 +61,11 @@ class HFAdaptedMixtralConfig(PretrainedConfig):
         self.p_dropout = p_dropout
         self.max_expected_seq_len = max_expected_seq_len
         self.use_cache = use_cache
+        self.dtensor_device_mesh = dtensor_device_mesh
+        self.dtensor_placements = dtensor_placements
+        self.enable_sequence_parallelism = enable_sequence_parallelism
+        self.sequence_parallel_shard_dim = sequence_parallel_shard_dim
+
         super().__init__(
             eos_token_id=eos_token_id,
             bos_token_id=bos_token_id,
@@ -80,4 +89,8 @@ class HFAdaptedMixtralConfig(PretrainedConfig):
     @classmethod
     def from_fms_config(cls, config: MixtralConfig, **hf_kwargs):
         config_dict = config.as_dict()
+        config_dict["dtensor_device_mesh"] = getattr(config, "device_mesh", None)
+        config_dict["dtensor_placements"] = getattr(config, "placements", None)
+        config_dict["enable_sequence_parallelism"] = getattr(config, "enable_seq_parallelism", False)
+        config_dict["sequence_parallel_shard_dim"] = getattr(config, "shard_dim", 1)
         return cls.from_dict(config_dict, **hf_kwargs)
