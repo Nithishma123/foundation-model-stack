@@ -33,6 +33,10 @@ class HFAdaptedLLaMAConfig(PretrainedConfig):
         eos_token_id: int = 2,
         bos_token_id: int = 1,
         is_decoder: bool = True,
+        dtensor_device_mesh: Optional[list] = None,
+        dtensor_placements: Optional[list] = None,
+        enable_sequence_parallelism: bool = False,
+        sequence_parallel_shard_dim: int = 1,
         **kwargs,
     ):
         self.src_vocab_size = src_vocab_size
@@ -47,6 +51,10 @@ class HFAdaptedLLaMAConfig(PretrainedConfig):
         self.p_dropout = p_dropout
         self.max_expected_seq_len = max_expected_seq_len
         self.use_cache = use_cache
+        self.dtensor_device_mesh = dtensor_device_mesh
+        self.dtensor_placements = dtensor_placements
+        self.enable_sequence_parallelism = enable_sequence_parallelism
+        self.sequence_parallel_shard_dim = sequence_parallel_shard_dim
         super().__init__(
             pad_token_id=pad_token_id,
             eos_token_id=eos_token_id,
@@ -72,4 +80,8 @@ class HFAdaptedLLaMAConfig(PretrainedConfig):
     def from_fms_config(cls, config: LLaMAConfig, **hf_kwargs):
         config_dict = config.as_dict()
         config_dict["pad_token_id"] = config_dict.pop("pad_id")
+        config_dict["dtensor_device_mesh"] = getattr(config, "device_mesh", None)
+        config_dict["dtensor_placements"] = getattr(config, "placements", None)
+        config_dict["enable_sequence_parallelism"] = getattr(config, "enable_seq_parallelism", False)
+        config_dict["sequence_parallel_shard_dim"] = getattr(config, "shard_dim", 1)
         return cls.from_dict(config_dict, **hf_kwargs)
