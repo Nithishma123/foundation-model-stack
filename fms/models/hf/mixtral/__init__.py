@@ -1,4 +1,5 @@
 import torch
+from torch.distributed._tensor import distribute_tensor, DeviceMesh, Shard
 from transformers import MixtralConfig, MixtralForCausalLM
 
 from fms.models.hf.mixtral.modeling_mixtral_hf import (
@@ -23,6 +24,8 @@ def convert_to_hf(
     GPTBigCodeForCausalLM
         an HF equivalent model
     """
+    device_mesh = DeviceMesh("cuda", torch.arange(torch.cuda.device_count()))
+    placement = [Shard(0)]
     hf_config: HFAdaptedMixtralConfig = fms_hf_model.config
     oss_hf_model = MixtralForCausalLM(
         MixtralConfig(
@@ -44,8 +47,8 @@ def convert_to_hf(
     )
 
     with torch.no_grad():
-        oss_hf_model.model.embed_tokens.weight.copy_(
-            fms_hf_model.decoder.model.embedding.weight
+        oss_hf_model.model.embed_tokens.weight = distribute_tensor(
+            fms_hf_model.decoder.model.embedding.weight, device_mesh, placement
         )
         for i, oss_hf_layer in enumerate(oss_hf_model.model.layers):
             fms_hf_layer = fms_hf_model.decoder.model.layers[i]
@@ -53,52 +56,72 @@ def convert_to_hf(
                 fms_hf_layer.attn.in_proj.qkv_fused.weight,
                 fms_hf_layer.attn.in_proj.splits,
             )
-
-            # self attn (+ HF RoPE transpose)
-            hf_q = (
+            hf_q = distribute_tensor(
                 hf_q.view(hf_config.nheads, 2, -1, hf_q.size(1))
                 .transpose(1, 2)
-                .reshape(*hf_q.size())
+                .reshape(*hf_q.size()),
+                device_mesh,
+                placement,
             )
-            oss_hf_layer.self_attn.q_proj.weight.copy_(hf_q)
-            hf_k = (
+            oss_hf_layer.self_attn.q_proj.weight = hf_q
+
+            hf_k = distribute_tensor(
                 hf_k.view(hf_config.kvheads, 2, -1, hf_k.size(1))
                 .transpose(1, 2)
-                .reshape(*hf_k.size())
+                .reshape(*hf_k.size()),
+                device_mesh,
+                placement,
             )
-            oss_hf_layer.self_attn.k_proj.weight.copy_(hf_k)
-            oss_hf_layer.self_attn.v_proj.weight.copy_(hf_v)
-            oss_hf_layer.self_attn.o_proj.weight.copy_(fms_hf_layer.attn.dense.weight)
+            oss_hf_layer.self_attn.k_proj.weight = hf_k
+
+            oss_hf_layer.self_attn.v_proj.weight = distribute_tensor(
+                hf_v, device_mesh, placement
+            )
+            oss_hf_layer.self_attn.o_proj.weight = distribute_tensor(
+                fms_hf_layer.attn.dense.weight, device_mesh, placement
+            )
 
             # MoE SwiGLU
-            oss_hf_layer.block_sparse_moe.gate.weight.copy_(
-                fms_hf_layer.ff_sub_layer.gate.weight
+            oss_hf_layer.block_sparse_moe.gate.weight = distribute_tensor(
+                fms_hf_layer.ff_sub_layer.gate.weight, device_mesh, placement
             )
             for expert_idx, expert_layer in enumerate(
                 oss_hf_layer.block_sparse_moe.experts
             ):
-                expert_layer.w1.weight.copy_(
+                expert_layer.w1.weight = distribute_tensor(
                     fms_hf_layer.ff_sub_layer.cond_ffn.w13.chunk(2, dim=1)[0][
                         expert_idx
-                    ]
+                    ],
+                    device_mesh,
+                    placement,
                 )
-                expert_layer.w3.weight.copy_(
+                expert_layer.w3.weight = distribute_tensor(
                     fms_hf_layer.ff_sub_layer.cond_ffn.w13.chunk(2, dim=1)[1][
                         expert_idx
-                    ]
+                    ],
+                    device_mesh,
+                    placement,
                 )
-                expert_layer.w2.weight.copy_(
-                    fms_hf_layer.ff_sub_layer.cond_ffn.w2[expert_idx]
+                expert_layer.w2.weight = distribute_tensor(
+                    fms_hf_layer.ff_sub_layer.cond_ffn.w2[expert_idx],
+                    device_mesh,
+                    placement,
                 )
 
-            # layer norm
-            oss_hf_layer.input_layernorm.weight.copy_(fms_hf_layer.ln.weight)
-            oss_hf_layer.post_attention_layernorm.weight.copy_(
-                fms_hf_layer.ff_ln.weight
+            # Layer norm
+            oss_hf_layer.input_layernorm.weight = distribute_tensor(
+                fms_hf_layer.ln.weight, device_mesh, placement
+            )
+            oss_hf_layer.post_attention_layernorm.weight = distribute_tensor(
+                fms_hf_layer.ff_ln.weight, device_mesh, placement
             )
 
-        # LM Head
-        oss_hf_model.model.norm.weight.copy_(fms_hf_model.decoder.model.dec_norm.weight)
-        oss_hf_model.lm_head.weight.copy_(fms_hf_model.lm_head.weight)
+        # Final norm and LM Head
+        oss_hf_model.model.norm.weight = distribute_tensor(
+            fms_hf_model.decoder.model.dec_norm.weight, device_mesh, placement
+        )
+        oss_hf_model.lm_head.weight = distribute_tensor(
+            fms_hf_model.lm_head.weight, device_mesh, placement
+        )
 
     return oss_hf_model
