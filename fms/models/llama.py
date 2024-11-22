@@ -11,6 +11,7 @@ from fms.distributed.strategy import (
     DistributedStrategy,
     NoOpStrategy,
     TensorParallelStrategy,
+    DTensorParallelStrategy
 )
 from fms.modules.attention import MultiHeadAttention
 from fms.modules.embedding import WordEmbedding
@@ -21,7 +22,7 @@ from fms.utils import serialization
 from fms.utils.activation import str_to_activation
 from fms.utils.config import ModelConfig
 from fms.utils.tokenizers import _has_hf
-
+from torch.distributed._tensor import DeviceMesh, Shard, distribute_tensor
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,8 @@ class LLaMAConfig(ModelConfig):
     rope_theta: float = 10_000.0
     linear_config: Optional[Mapping[str, Any]] = None
     fused_weights: bool = True
+    device_mesh: Optional[DeviceMesh] = None
+    shard_dim: Optional[int] = None
 
 
 class LLaMABlock(nn.Module):
@@ -332,6 +335,17 @@ class LLaMA(nn.Module):
             + [buffer.device for buffer in self.buffers()]
         ):
             self.rot_emb.compute_freqs_cis(device, self.config.max_expected_seq_len)
+        if isinstance(self.distributed_strategy, DTensorParallelStrategy):
+            device_mesh = self.distributed_strategy.device_mesh
+            shard_dim = self.distributed_strategy.shard_dim
+            for layer in self.layers:
+                for name, param in layer.named_parameters(recurse=False)
+                if param.device == torch.device("meta"):
+                    param.data = distribute_tensor(
+                        torch.empty_like(param, device="cuda"),
+                        device_mesh=device_mesh,
+                        placements=[Shard(shard_dim)],
+                    )
 
     def _helper(
         self,
@@ -723,7 +737,7 @@ serialization.register_adapter(
 )
 
 
-def convert_hf_llama(hf_model: "LlamaForCausalLM") -> LLaMA:  # type: ignore
+def convert_hf_llama(hf_model: "LlamaForCausalLM", device_mesh: Optional[DeviceMesh] = None, shard_dim: Optional[int] = None) -> LLaMA:  # type: ignore
     """
     Convert a Llama huggingface model to an fms model
 
@@ -783,7 +797,13 @@ def convert_hf_llama(hf_model: "LlamaForCausalLM") -> LLaMA:  # type: ignore
         new_name = name
         for pattern, repl in replacements:
             new_name = re.sub(pattern, repl, new_name)
-        new_sd[new_name] = param
+        if device_mesh is not None:
+            new_sd[new_name] = distribute_tensor(
+                param, device_mesh=device_mesh, placements=[Shard(shard_dim)]
+            )
+        else:
+            new_sd[new_name] = param
+
 
     model.load_state_dict(new_sd, strict=False)
     model.shared.head.weight = hf_model.lm_head.weight
