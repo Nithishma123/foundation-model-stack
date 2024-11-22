@@ -7,7 +7,7 @@ import torch.distributed
 from torch import nn
 
 from fms.utils import tp_wrapping
-
+from torch.distributed._tensor import distribute_tensor, DeviceMesh, Shard, Replicate
 
 if "DISTRIBUTED_STRATEGY_IGNORE_MODULES" in os.environ:
     _distributed_strategy_ignore_modules = os.environ[
@@ -159,3 +159,57 @@ class TensorParallelStrategy(DistributedStrategy):
 
     def _distribute_layer(self, block: nn.Module, layer: int) -> nn.Module:
         return tp_wrapping.apply_tp(block, self.group)
+
+
+from torch.distributed._tensor import distribute_tensor, DeviceMesh, Shard, Replicate
+
+class DTensorParallelStrategy(DistributedStrategy):
+    def __init__(self, devices: List[int], from_meta=False):
+        """
+        Initialize DTensorParallelStrategy with specified devices.
+        :param devices: List of device indices to create a DeviceMesh.
+        :param from_meta: Whether the tensors should be initialized as meta tensors.
+        """
+        super().__init__(from_meta)
+        self.device_mesh = DeviceMesh("cuda", devices)
+        self.placements = [Shard(0)]
+
+    def _distribute_module(
+        self, module: nn.Module, final_layers: bool = False
+    ) -> nn.Module:
+        """
+        Distribute an entire module across the DeviceMesh.
+        :param module: PyTorch module to be distributed.
+        :param final_layers: If True, place on the last device in the mesh.
+        :return: Distributed module.
+        """
+        placement = [Replicate()] if final_layers else self.placements
+        try:
+            for name, param in module.named_parameters():
+                module.register_parameter(
+                    name,
+                    distribute_tensor(param, self.device_mesh, placements=placement),
+                )
+            print(f"Distributed module {type(module).__name__} on {self.device_mesh}")
+        except Exception as e:
+            print(f"Error distributing module {type(module).__name__}: {e}")
+        return module
+
+    def _distribute_layer(self, block: nn.Module, layer: int) -> nn.Module:
+        """
+        Distribute a single layer across the DeviceMesh.
+        :param block: PyTorch module representing a block or layer.
+        :param layer: Layer index for reference.
+        :return: Distributed layer.
+        """
+        placement = self.placements
+        try:
+            for name, param in block.named_parameters():
+                block.register_parameter(
+                    name,
+                    distribute_tensor(param, self.device_mesh, placements=placement),
+                )
+            print(f"Distributed layer {layer} ({type(block).__name__}) on {self.device_mesh}")
+        except Exception as e:
+            print(f"Error distributing layer {layer} ({type(block).__name__}): {e}")
+        return block
