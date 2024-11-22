@@ -2,6 +2,7 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
+from torch.distributed._tensor import distribute_tensor, DeviceMesh, Shard
 from transformers import PretrainedConfig
 from transformers.modeling_outputs import BaseModelOutputWithPastAndCrossAttentions
 
@@ -184,6 +185,13 @@ class HFAdaptedRoBERTaForSequenceClassification(
     def _hf_model_from_fms(
         cls, model: RoBERTa, config: HFAdaptedRoBERTaConfig
     ) -> "HFAdaptedRoBERTaForSequenceClassification":
+        device_mesh = DeviceMesh("cuda", torch.arange(torch.cuda.device_count()))
+        placement = [Shard(0)]
+
+        model.base_model.embedding.weight = distribute_tensor(
+            model.base_model.embedding.weight, device_mesh, placement
+        )
+        
         return cls(
             config=config,
             encoder=model.base_model,
