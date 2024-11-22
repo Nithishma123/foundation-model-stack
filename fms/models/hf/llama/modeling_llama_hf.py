@@ -2,6 +2,7 @@ from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
+from torch.distributed._tensor import distribute_tensor, DeviceMesh, Shard
 from transformers import PretrainedConfig
 from transformers.modeling_outputs import BaseModelOutputWithPastAndCrossAttentions
 
@@ -18,7 +19,9 @@ class HFAdaptedLLaMADecoder(HFDecoder):
         super().__init__(model, config, attention_mask_dim=3)
 
     def set_input_embeddings(self, value: nn.Module):
-        self.model.shared.emb = value
+        device_mesh = DeviceMesh("cuda", torch.arange(torch.cuda.device_count()))
+        placement = [Shard(0)]
+        self.model.shared.emb = distribute_tensor(value.weight, device_mesh, placement)
 
     def _adapt(
         self,
@@ -120,6 +123,15 @@ class HFAdaptedLLaMAForCausalLM(LMHeadModelLMHeadMixin, HFAdaptedLLaMAHeadless):
     def _hf_model_from_fms(
         cls, model: LLaMA, config: HFAdaptedLLaMAConfig
     ) -> "HFAdaptedLLaMAForCausalLM":
+        device_mesh = DeviceMesh("cuda", torch.arange(torch.cuda.device_count()))
+        placement = [Shard(0)]
+
+        embedding_weight = distribute_tensor(model.shared.emb.weight, device_mesh, placement)
+        lm_head_weight = distribute_tensor(model.shared.head.weight, device_mesh, placement)
+
+        model.shared.emb.weight = embedding_weight
+        model.shared.head.weight = lm_head_weight
+
         return cls(
             config=config,
             decoder=model,
@@ -130,4 +142,6 @@ class HFAdaptedLLaMAForCausalLM(LMHeadModelLMHeadMixin, HFAdaptedLLaMAHeadless):
     # overriding this to enable tensor-parallel since it requires a WordEmbedding forward
     # in the future WordEmbedding should be split up
     def _lm_head(self, input_ids, *args, **kwargs):
+        shard_size = input_ids.size(0) // torch.distributed.get_world_size()
+        input_ids = torch.split(input_ids, shard_size, dim=0)[torch.distributed.get_rank()]
         return self.decoder.model.shared(input_ids, reverse=True)
