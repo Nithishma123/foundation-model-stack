@@ -339,9 +339,9 @@ class LLaMA(nn.Module):
             device_mesh = self.distributed_strategy.device_mesh
             shard_dim = self.distributed_strategy.shard_dim
             for layer in self.layers:
-                for name, param in layer.named_parameters(recurse=False)
-                if param.device == torch.device("meta"):
-                    param.data = distribute_tensor(
+                for name, param in layer.named_parameters(recurse=False):
+                    if param.device == torch.device("meta"):
+                        param.data = distribute_tensor(
                         torch.empty_like(param, device="cuda"),
                         device_mesh=device_mesh,
                         placements=[Shard(shard_dim)],
