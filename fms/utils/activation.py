@@ -1,7 +1,7 @@
 from typing import Dict, Type, Union
 
 import torch.nn as nn
-
+import torch
 
 class GELUTanh(nn.GELU):
     def __init__(self):
@@ -46,7 +46,10 @@ def str_to_activation(activation_str: str) -> nn.Module:
     activation_str = activation_str.lower()
     if activation_str not in __ACT_2_CLS.keys():
         raise ValueError(f"activation string must be one of {__ACT_2_CLS.keys()}")
-    return __ACT_2_CLS[activation_str.lower()]()
+    activation_module = __ACT_2_CLS[activation_str]()
+    if torch.distributed.is_initialized():
+        activation_module = torch.nn.parallel.DistributedDataParallel(activation_module)
+    return activation_module
 
 
 def activation_to_str(activation: Union[Type[nn.Module], nn.Module]) -> str:
