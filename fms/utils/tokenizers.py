@@ -3,7 +3,7 @@ from typing import List, Optional, Union
 
 import torch
 import torch.nn.functional as F
-
+from torch.distributed.tensor import DTensor
 from fms import utils
 
 
@@ -67,6 +67,7 @@ class CharTokenizer(BaseTokenizer):
         return list(text)
 
     def convert_ids_to_tokens(self, ids: torch.LongTensor):
+        ids = ids.to_local() if isinstance(ids, DTensor) else ids
         return [chr(i) for i in ids]
 
     def convert_tokens_to_ids(self, tokens: Union[str, list[str]]):
@@ -101,7 +102,9 @@ class _SentencePieceTokenizer(BaseTokenizer):
     def tokenize(self, text: str):
         return self.sp_model.encode_as_pieces(text)
 
-    def convert_ids_to_tokens(self, ids: Union[List[int], torch.LongTensor]):
+    def convert_ids_to_tokens(self, ids: Union[List[int], torch.LongTensor, DTensor]):
+        if isinstance(ids, DTensor):
+            ids = ids.to_local().tolist()
         if isinstance(ids, torch.Tensor):
             ids = ids.tolist()
         return self.sp_model.id_to_piece(ids)
@@ -130,7 +133,8 @@ class _HFTokenizer(BaseTokenizer):
     def tokenize(self, text: str):
         return self.tokenizer.tokenize(text)
 
-    def convert_ids_to_tokens(self, ids: torch.LongTensor):
+    def convert_ids_to_tokens(self, ids: Union[torch.LongTensor, DTensor]):
+        ids = ids.to_local() if isinstance(ids, DTensor) else ids
         return self.tokenizer.convert_ids_to_tokens(ids)
 
     def convert_tokens_to_ids(self, tokens: Union[str, list[str]]):
