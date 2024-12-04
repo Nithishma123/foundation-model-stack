@@ -3,7 +3,7 @@ from typing import MutableMapping, Optional, Tuple
 
 import torch
 from torch import nn
-
+from torch.distributed._tensor import DTensor, Shard
 
 class PositionEncoder:
     """
@@ -95,7 +95,12 @@ class Alibi(PositionEncoder):
         if mask is not None:
             # Can't do in-place op in case broadcast makes attn_mask bigger
             attn_mask = attn_mask.masked_fill(mask == 0, float("-inf"))
-
+        if torch.distributed.is_initialized():
+            attn_mask = DTensor.from_local(
+            attn_mask,
+            Shard(1),  # Shard along the sequence length
+            mesh=torch.distributed.get_device_mesh(),
+        )
         return attn_mask
 
 
@@ -183,6 +188,12 @@ class RotaryEmbedding(PositionEncoder):
         freqs = 1.0 / (
             ratio
             ** (torch.arange(0, dim, 2, device=device)[: (dim // 2)].float() / dim)
+        )
+        if torch.distributed.is_initialized():
+            freqs = DTensor.from_local(
+            freqs,
+            Shard(0),  # Shard along the sequence length
+            mesh=torch.distributed.get_device_mesh(),
         )
 
         t = torch.arange(max_seq_len, device=device, dtype=freqs.dtype)
