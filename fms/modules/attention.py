@@ -6,6 +6,7 @@ import torch.distributed
 from torch import Tensor, nn
 from torch.distributed.distributed_c10d import ProcessGroup
 from torch.nn import functional as F
+from torch.distributed._tensor import DeviceMesh, distribute_tensor, Shard
 
 from fms import distributed
 from fms.distributed.tensorparallel import (
@@ -34,10 +35,14 @@ class QKV(nn.Module, metaclass=abc.ABCMeta):
         emb_v_per_head: int,
         use_bias: bool,
         linear_config: Optional[Mapping[str, Any]] = None,
+        device_mesh: Optional[DeviceMesh] = None,
+        shard_dim: Optional[int] = None,
         *args,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
+        self.device_mesh = device_mesh
+        self.shard_dim = shard_dim
         self.emb_dim = emb_dim
         self.nheads = nheads
         self.kvheads = kvheads
@@ -142,6 +147,10 @@ class UnfusedQKV(QKV):
             raise ValueError(
                 "both k and v must either be given as tensors or both None"
             )
+        if self.device_mesh and self.shard_dim is not None:
+            q = distribute_tensor(q, device_mesh=self.device_mesh, placements=[Shard(self.shard_dim)])
+            k = distribute_tensor(k, device_mesh=self.device_mesh, placements=[Shard(self.shard_dim)])
+            v = distribute_tensor(v, device_mesh=self.device_mesh, placements=[Shard(self.shard_dim)])
 
         # b x h x qlen x ds
         queries = self.query(q)
@@ -355,6 +364,12 @@ class MultiHeadAttention(nn.Module):
         """
         # q, k, v: batch_size x seq_len x emb_dim
         # mask: batch_size x seq_len x seq_len
+        if self.device_mesh and self.shard_dim is not None:
+            q = distribute_tensor(q, device_mesh=self.device_mesh, placements=[Shard(self.shard_dim)])
+            if k is not None:
+                k = distribute_tensor(k, device_mesh=self.device_mesh, placements=[Shard(self.shard_dim)])
+            if v is not None:
+                v = distribute_tensor(v, device_mesh=self.device_mesh, placements=[Shard(self.shard_dim)])
         batch_size, q_len, _ = q.size()
 
         # if this is self attention, we always recompute
@@ -497,6 +512,8 @@ class TPMultiHeadAttention(MultiHeadAttention, TPModule):
         group: Optional[ProcessGroup] = None,
         linear_config: Optional[Mapping[str, Any]] = None,
         scale_factor: Optional[float] = None,
+        device_mesh: Optional[DeviceMesh] = None,  # Add DeviceMesh
+        shard_dim: Optional[int] = 0,  # Dimension to shard
     ):
         assert torch.distributed.is_initialized()
 
@@ -507,6 +524,8 @@ class TPMultiHeadAttention(MultiHeadAttention, TPModule):
         assert (kvheads >= world_size and kvheads % world_size == 0) or (
             kvheads < world_size and world_size % kvheads == 0
         ), "the kv heads must be divisible by the world size or the world size must be divisible by kv heads"
+        self.device_mesh = device_mesh
+        self.shard_dim = shard_dim
         MultiHeadAttention.__init__(
             self,
             emb_dim,
@@ -594,26 +613,15 @@ class TPMultiHeadAttention(MultiHeadAttention, TPModule):
         )
         return tp_mha
 
-    def _copy_to_tp_region(
-        self,
-        q: torch.Tensor,
-        k: Optional[torch.Tensor] = None,
-        v: Optional[torch.Tensor] = None,
-    ):
-        if (k is None and v is None) or (k is q and v is q):
-            q_par = copy_to_tensor_model_parallel_region(q)
-            if self.fused:
-                k_par = None
-                v_par = None
-            else:
-                k_par = copy_to_tensor_model_parallel_region(k)
-                v_par = copy_to_tensor_model_parallel_region(v)
-        else:
-            raise ValueError(
-                "both k and v must either be given as tensors or both None"
-            )
+    def _copy_to_tp_region(self,q: torch.Tensor,k: Optional[torch.Tensor] = None,v: Optional[torch.Tensor] = None,):
+        if self.device_mesh and self.shard_dim is not None:
+            q = distribute_tensor(q, device_mesh=self.device_mesh, placements=[Shard(self.shard_dim)])
+            if k is not None:
+                k = distribute_tensor(k, device_mesh=self.device_mesh, placements=[Shard(self.shard_dim)])
+                if v is not None:
+                    v = distribute_tensor(v, device_mesh=self.device_mesh, placements=[Shard(self.shard_dim)])
+        return q, k, v
 
-        return q_par, k_par, v_par
 
     def forward(
         self,
