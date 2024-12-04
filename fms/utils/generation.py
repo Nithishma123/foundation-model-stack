@@ -4,7 +4,7 @@ from typing import Any, Callable, List, MutableMapping, Optional, Tuple, Union
 
 import torch
 import torch.nn.functional as F
-
+from torch.distributed.tensor import Tensor as DTensor
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,8 @@ def pad_input_ids(
         position_ids_list.append(torch.cat((pos_ids_pads, pos_ids_seq)))
 
     input_ids = torch.stack(padded_input_ids_list)
+    if isinstance(input_ids, DTensor):
+        input_ids = input_ids.redistribute()
     padding_kwargs = {}
     mask = torch.stack(mask_list)
     # this is a causal mask for generation
@@ -79,6 +81,8 @@ def __update_padding_kwargs(
     if mask is not None:
         # get the last row of the 3d mask
         mask = mask[:, -1:, :]
+        if isinstance(mask, DTensor):
+            mask = mask.redistribute()
         # extend the mask one slot
         mask = torch.cat(
             (
@@ -92,6 +96,8 @@ def __update_padding_kwargs(
     # extend the position_ids
     position_ids = model_specific_kwargs.get("position_ids", None)
     if position_ids is not None:
+        if isinstance(position_ids, DTensor):
+            position_ids = position_ids.redistribute()
         if use_cache:
             position_ids = position_ids[:, -1:] + 1
         else:
@@ -110,8 +116,11 @@ def _make_cache_contiguous(past_key_value_states):
     for layer_idx in range(len(past_key_value_states)):
         n_kv_s.append([])
         for tensor_idx in range(len(past_key_value_states[layer_idx])):
+            tensor = past_key_value_states[layer_idx][tensor_idx]
+            if isinstance(tensor, DTensor):
+                tensor = tensor.redistribute()
             n_kv_s[layer_idx].append(
-                past_key_value_states[layer_idx][tensor_idx]
+                tensor
                 .clone(memory_format=torch.contiguous_format)
                 .detach()
             )
@@ -123,6 +132,8 @@ def _make_cache_dynamic(past_key_value_states):
     # mode='reduce-overhead'
     for layer in past_key_value_states:
         for tensor in layer:
+            if isinstance(tensor, DTensor):
+                tensor = tensor.redistribute()
             torch._dynamo.mark_dynamic(tensor, 2)
     return past_key_value_states
 
@@ -196,6 +207,9 @@ def generate(
             input_ids = input_ids.unsqueeze(0)
     else:
         raise TypeError("input_ids must be one of Tensor or List")
+    
+    if isinstance(input_ids, DTensor):
+        input_ids = input_ids.redistribute()
 
     eos_found = torch.zeros(
         input_ids.shape[0], dtype=torch.bool, device=input_ids.device
@@ -298,6 +312,8 @@ def truncate_after_eos(
     (and including) the 'end of sentence' token.
     Currently only handles unbatched sequences.
     """
+    if isinstance(result, DTensor):
+        result = result.redistribute()
     if eos_token_id is None:
         return result
     eos_idx = torch.where(result == eos_token_id)
