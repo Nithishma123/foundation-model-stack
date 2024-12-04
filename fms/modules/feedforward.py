@@ -5,7 +5,7 @@ import torch.distributed
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributed.distributed_c10d import ProcessGroup
-
+from torch.distributed._tensor import DeviceMesh, distribute_tensor, Shard
 import fms.triton.pytorch_ops as triton_ops  # registers the PT custom ops
 from fms import distributed
 from fms.distributed.tensorparallel import (
@@ -123,11 +123,15 @@ class TPFeedForwardBlock(FeedForwardBlock, TPModule):
         use_bias=True,
         group: Optional[ProcessGroup] = None,
         linear_config: Optional[Mapping[str, Any]] = None,
+        device_mesh: Optional[DeviceMesh] = None,  # Add DeviceMesh
+        shard_dim: int = 0,  # Add shard dimension
     ):
         assert torch.distributed.is_initialized()
         hidden_dim = int(hidden_grow_factor * emb_dim)
         if multiple_of:
             hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
+        self.device_mesh = device_mesh
+        self.shard_dim = shard_dim
         rank, world_size = distributed.rank_and_world(group)
         assert (
             hidden_dim % world_size == 0
@@ -143,6 +147,19 @@ class TPFeedForwardBlock(FeedForwardBlock, TPModule):
             linear_config,
         )
         self.setup_tp(rank, world_size)
+        if self.device_mesh is not None:
+            self.w1.weight = nn.Parameter(
+                torch.distributed._tensor.distribute_tensor(
+                self.w1.weight,
+                device_mesh=self.device_mesh,
+                placements=[torch.distributed._tensor.Shard(self.shard_dim)],
+            ))
+            self.w2.weight = nn.Parameter(
+                torch.distributed._tensor.distribute_tensor(
+                self.w2.weight,
+                device_mesh=self.device_mesh,
+                placements=[torch.distributed._tensor.Shard(self.shard_dim)],
+            ))
 
     def load_weights(
         self,
@@ -151,19 +168,37 @@ class TPFeedForwardBlock(FeedForwardBlock, TPModule):
         """Define name of FFN modules to TP-shard, their name-to-module mapping,
         per-module base sharding dimension, and per-module max partition size.
         """
-
+        used_keys: Set[str] = set()
         # sharding modules struct: {'module_name': (module_obj, sharding_dim, max_partition)}
         module_sharding_info = {
             "w1": LinearModuleShardingInfo(self.w1, 0, [self.world_size]),
             "w2": LinearModuleShardingInfo(self.w2, 1, [self.world_size]),
         }
 
-        type_sharding_map = get_all_linear_type_to_sharding_maps()
-        unused_keys = type_sharding_map[self.linear_type](
-            tensor_values,
-            self,
-            module_sharding_info,
-        )
+        if self.device_mesh:
+            for module_name, sharding_info in module_sharding_info.items():
+                weight_key = self._get_sd_weight(tensor_values, used_keys, [module_name])
+                setattr(
+                sharding_info.module,
+                "weight",
+                nn.Parameter(
+                    torch.distributed._tensor.distribute_tensor(
+                        weight_key,
+                        device_mesh=self.device_mesh,
+                        placements=[torch.distributed._tensor.Shard(sharding_info.shard_dim)],
+                    )
+                ),
+                )
+        else:
+            type_sharding_map = get_all_linear_type_to_sharding_maps()
+            unused_keys = type_sharding_map[self.linear_type](
+                tensor_values,
+                self,
+                module_sharding_info,
+            )
+            return unused_keys
+        if len(tensor_values) > len(used_keys):
+            unused_keys = set(tensor_values.keys()).difference(used_keys)
         return unused_keys
 
     @staticmethod
@@ -352,6 +387,8 @@ class TPGatedLinearUnit(GatedLinearUnit, TPModule):
         group: Optional[ProcessGroup] = None,
         fused: bool = True,
         linear_config: Optional[Mapping[str, Any]] = None,
+        device_mesh: Optional[torch.distributed._tensor.DeviceMesh] = None,
+        shard_dim: int = 0,
     ):
         assert torch.distributed.is_initialized()
         rank, world_size = distributed.rank_and_world(group)
@@ -362,6 +399,9 @@ class TPGatedLinearUnit(GatedLinearUnit, TPModule):
         assert (
             hidden_dim % world_size == 0
         ), "Hidden dim must be divisible by world size"
+
+        self.device_mesh = device_mesh
+        self.shard_dim = shard_dim
         GatedLinearUnit.__init__(
             self,
             emb_dim,
@@ -392,7 +432,7 @@ class TPGatedLinearUnit(GatedLinearUnit, TPModule):
         till we need to duplicate. For instance if we have nheads=16 and
         world_size=32, then first 2 ranks will get first 1/16th of query
         """
-
+        used_keys: Set[str] = set()
         # sharding modules struct: {'module_name': (module_obj, sharding_dim, max_partition)}
         if self.fused:
             module_sharding_info = {
@@ -400,21 +440,47 @@ class TPGatedLinearUnit(GatedLinearUnit, TPModule):
                     self.wg1_fused, 0, [self.world_size, self.world_size]
                 ),
             }
+            if self.device_mesh:
+                wg1_fused_weight = self._get_sd_weight(tensor_values, used_keys, ["wg1_fused"])
+                self.wg1_fused.weight = nn.Parameter(
+                    torch.distributed._tensor.distribute_tensor(
+                        wg1_fused_weight, device_mesh=self.device_mesh, placements=[torch.distributed._tensor.Shard(self.shard_dim)]
+                        )
+                    )
         else:
             module_sharding_info = {
                 "w1": LinearModuleShardingInfo(self.w1, 0, [self.world_size]),
                 "wg": LinearModuleShardingInfo(self.wg, 0, [self.world_size]),
             }
+            if self.device_mesh:
+                wg_weight = self._get_sd_weight(tensor_values, used_keys, ["wg"])
+                self.wg.weight = nn.Parameter(
+                    torch.distributed._tensor.distribute_tensor(
+                        wg_weight, device_mesh=self.device_mesh, placements=[torch.distributed._tensor.Shard(self.shard_dim)]
+                        ))
+                w1_weight = self._get_sd_weight(tensor_values, used_keys, ["w1"])
+                self.w1.weight = nn.Parameter(
+                    torch.distributed._tensor.distribute_tensor(
+                        w1_weight, device_mesh=self.device_mesh, placements=[torch.distributed._tensor.Shard(self.shard_dim)]
+                        ))
+                w2_weight = self._get_sd_weight(tensor_values, used_keys, ["w2"])
+                self.w2.weight = nn.Parameter(torch.distributed._tensor.distribute_tensor(
+                    w2_weight, device_mesh=self.device_mesh, placements=[torch.distributed._tensor.Shard(self.shard_dim)]
+                    ))
         module_sharding_info["w2"] = LinearModuleShardingInfo(
             self.w2, 1, [self.world_size]
         )
+        if not self.device_mesh:
+            type_sharding_map = get_all_linear_type_to_sharding_maps()
+            unused_keys = type_sharding_map[self.linear_type](
+                tensor_values,
+                self,
+                module_sharding_info,
+            )
+            
+        if len(tensor_values) > len(used_keys):
+            unused_keys = set(tensor_values.keys()).difference(used_keys)
 
-        type_sharding_map = get_all_linear_type_to_sharding_maps()
-        unused_keys = type_sharding_map[self.linear_type](
-            tensor_values,
-            self,
-            module_sharding_info,
-        )
         return unused_keys
 
     @staticmethod
@@ -557,6 +623,8 @@ class TPConditionalFeedForward(ConditionalFeedForward, TPModule):
         dim: int,
         intermediate_size: int,
         group: Optional[ProcessGroup] = None,
+        device_mesh: Optional[torch.distributed._tensor.DeviceMesh] = None,
+        shard_dim: int = 1,
     ):
         assert torch.distributed.is_initialized()
         rank, world_size = distributed.rank_and_world(group)
@@ -564,6 +632,8 @@ class TPConditionalFeedForward(ConditionalFeedForward, TPModule):
         assert (
             intermediate_size % world_size == 0
         ), "Intermediate size must be divisible by world size"
+        self.device_mesh = device_mesh
+        self.shard_dim = shard_dim
         ConditionalFeedForward.__init__(
             self,
             num_experts,
@@ -579,8 +649,16 @@ class TPConditionalFeedForward(ConditionalFeedForward, TPModule):
         # 1. Grab the weights from tensor_values
         used_keys: Set[str] = set()
         w13_weight = self._get_sd_weight(tensor_values, used_keys, ["w13"])
+        self.w13 = nn.Parameter(
+            torch.distributed._tensor.distribute_tensor(
+                w13_weight, device_mesh=self.device_mesh, placements=[torch.distributed._tensor.Shard(self.shard_dim)]
+        ))
         w2_weight = self._get_sd_weight(tensor_values, used_keys, ["w2"])
-
+        self.w2 = nn.Parameter(
+            torch.distributed._tensor.distribute_tensor(
+                w2_weight, device_mesh=self.device_mesh, placements=[torch.distributed._tensor.Shard(self.shard_dim)]
+        )
+        )
         # 2. Raise exceptions
         if len(tensor_values) > 2:
             unused_keys = set(tensor_values.keys()).difference(used_keys)
