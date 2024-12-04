@@ -3,6 +3,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.distributed._tensor import DeviceMesh, distribute_tensor, Shard
 
 
 class LayerNormParameterized(nn.Module):
@@ -32,6 +33,7 @@ class LayerNormParameterized(nn.Module):
         elementwise_shift=False,
         use_mean=False,
         use_high_precision_pow=False,
+        device_mesh: DeviceMesh = None,
     ):
         super(LayerNormParameterized, self).__init__()
         self.normalized_shape = normalized_shape
@@ -40,13 +42,25 @@ class LayerNormParameterized(nn.Module):
         self.elementwise_shift = elementwise_shift
         self.use_mean = use_mean
         self.use_high_precision_pow = use_high_precision_pow
+        self.device_mesh = device_mesh
 
         if self.elementwise_scale:
-            self.weight = nn.Parameter(torch.empty(self.normalized_shape))
+            weight = torch.empty(self.normalized_shape)
+            self.weight = nn.Parameter(
+                distribute_tensor(self.weight , device_mesh, placements=[Shard(0)])
+                if device_mesh
+                else weight
+            )
         # else:
         #     self.register_parameter("weight", None)
         if self.elementwise_shift:
-            self.bias = nn.Parameter(torch.empty(self.normalized_shape))
+            bias = torch.empty(self.normalized_shape)
+            self.bias = nn.Parameter(
+                distribute_tensor(bias, device_mesh, placements=[Shard(0)])
+                if device_mesh
+                else bias
+            )
+
         # else:
         #     self.register_parameter("bias", None)
 
