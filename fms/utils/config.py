@@ -5,7 +5,7 @@ import logging
 import os
 from dataclasses import asdict, dataclass
 from typing import TypeVar, Union
-
+import torch.distributed as dist
 
 logger = logging.getLogger(__name__)
 
@@ -16,24 +16,34 @@ T = TypeVar("T", bound="ModelConfig")
 class ModelConfig:
     @classmethod
     def load(cls, json_file: Union[str, os.PathLike]) -> "ModelConfig":
+        if dist.is_initialized() and dist.get_rank() != 0:
+            dist.barrier()
+            return None
         with open(json_file, "r", encoding="utf-8") as reader:
             text = reader.read()
         json_dict = json.loads(text)
 
-        return cls(
+        config = cls(
             **{
                 k: v
                 for k, v in json_dict.items()
                 if k in inspect.signature(cls).parameters
             }
         )
+        if dist.is_initialized():
+            dist.barrier()
+        return config
 
     def as_dict(self) -> dict:
         return asdict(self)
 
     def save(self, file_path: Union[str, os.PathLike]):
+        if dist.is_initialized() and dist.get_rank() != 0:
+            return
         with open(file_path, "w") as f:
             json.dump(self.as_dict(), f)
+        if dist.is_initialized():
+            dist.barrier()
 
     def updated(self: T, **kwargs) -> T:
         """Clone this ModelConfig and override the parameters of the ModelConfig specified by kwargs
@@ -59,7 +69,8 @@ class ModelConfig:
             else:
                 unknown_params.append(k)
         if len(unknown_params) > 0:
-            logger.info(
-                f"""Found the following unknown parameters while cloning and updating the configuration: {unknown_params}"""
-            )
+             if dist.is_initialized() and dist.get_rank() == 0:
+                logger.info(
+                    f"Found the following unknown parameters while cloning and updating the configuration: {unknown_params}"
+                )
         return copied_config
