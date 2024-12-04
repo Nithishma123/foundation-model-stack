@@ -20,6 +20,10 @@ def __one_step(
 ):
     autocast = amp.autocast if grad_scaler is not None else nullcontext
     with autocast():
+        if isinstance(input, torch.distributed._tensor.DTensor):
+            input = input.redistribute()
+        if isinstance(label, torch.distributed._tensor.DTensor):
+            label = label.redistribute()
         output = model(input)
         loss = loss_fn(output, label)
 
@@ -40,6 +44,9 @@ def __optimize(model, optimizer, grad_scaler):
         nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
     optimizer.zero_grad()
+    for param in model.parameters():
+        if isinstance(param.data, torch.distributed._tensor.DTensor):
+            param.data = param.data.redistribute()
 
 
 def __one_epoch(
@@ -73,8 +80,15 @@ def __one_epoch(
         batch_size = input.shape[0]
         input_length = input.shape[1]
 
-        input = input.to(device)
-        label = label.to(device)
+        if isinstance(input, torch.distributed._tensor.DTensor):
+            input = input.to(device).redistribute()
+        else:
+            input = input.to(device)
+            
+        if isinstance(label, torch.distributed._tensor.DTensor):
+            label = label.to(device).redistribute()
+        else:
+            label = label.to(device)
 
         loss = __one_step(model, input, label, loss_fn, grad_scaler)
         if (step + 1) % accum_iters == 0:
