@@ -136,6 +136,13 @@ def invoke_fused_moe_kernel(
     assert B.is_contiguous()
     assert C.is_contiguous()
 
+    if isinstance(A, torch.distributed._tensor.DTensor):
+        A = A.redistribute()
+    if isinstance(B, torch.distributed._tensor.DTensor):
+        B = B.redistribute()
+    if isinstance(C, torch.distributed._tensor.DTensor):
+        C = C.redistribute()
+
     EM = padded_token_ids_per_block.shape[0]
     N = B.shape[1]
 
@@ -168,7 +175,6 @@ def invoke_fused_moe_kernel(
         compute_type=compute_type,
         **config,
     )
-
 
 def _autotune(configs, function):
     import torch.utils.benchmark as benchmark
