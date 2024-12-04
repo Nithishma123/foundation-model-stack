@@ -48,9 +48,12 @@ class ExpandableTensor(torch.Tensor):
         if preallocate_length is not None and preallocate_length > self._dim_length:
             sizes = list(tensor.size())
             sizes[dim] = preallocate_length
-            self._underlying_tensor = torch.empty(
-                size=sizes, dtype=tensor.dtype, device=tensor.device
-            )
+            if isinstance(tensor, torch.distributed.tensor.Tensor):
+                self._underlying_tensor = tensor.redistribute(size=sizes)
+            else:
+                self._underlying_tensor = torch.empty(
+                    size=sizes, dtype=tensor.dtype, device=tensor.device
+                )
             self._tensor().copy_(tensor)
 
     def __new__(cls, tensor, dim=0, preallocate_length=None):
@@ -75,6 +78,12 @@ class ExpandableTensor(torch.Tensor):
         for i in range(len(expected)):
             if i != dim:
                 assert expected[i] == tensor_sizes[i]
+        if isinstance(self._underlying_tensor, torch.distributed.tensor.Tensor):
+            if tensor.device != self._underlying_tensor.device:
+                tensor = tensor.to(self._underlying_tensor.device)
+            if not torch.distributed.tensor.is_compatible(self._underlying_tensor, tensor):
+                raise ValueError("Incompatible DTensor shapes or placements.")
+            
         if self.size()[dim] + tensor.size()[dim] <= self._underlying_tensor.size()[dim]:
             # copy into tail of _tensor
             view = self._underlying_tensor
@@ -82,7 +91,10 @@ class ExpandableTensor(torch.Tensor):
             sizes[self._dim] = tensor.size()[dim]
             strides = self._underlying_tensor.stride()
             offset = self._dim_length * strides[self._dim]
-            view = view.as_strided(size=sizes, stride=strides, storage_offset=offset)
+            if isinstance(view, torch.distributed.tensor.Tensor):
+                view = view.slice(self._dim, self._dim_length, self._dim_length + tensor.size()[dim])
+            else:
+                view = view.as_strided(size=sizes, stride=strides, storage_offset=offset)
             view.copy_(tensor)
             result = ExpandableTensor(self._underlying_tensor, dim=self._dim)
             result._dim_length = self._dim_length + tensor.shape[dim]
@@ -101,7 +113,10 @@ class ExpandableTensor(torch.Tensor):
         view = self._underlying_tensor
         sizes = list(view.size())
         sizes[self._dim] = self._dim_length
-        view = view.as_strided(size=sizes, stride=view.stride())
+        if isinstance(view, torch.distributed.tensor.Tensor):
+            view = view.slice(self._dim, 0, self._dim_length)
+        else:
+            view = view.as_strided(size=sizes, stride=view.stride())
         return view
 
     def __repr__(self):
