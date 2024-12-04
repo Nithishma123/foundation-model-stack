@@ -6,6 +6,7 @@ from typing import Dict, List, Optional, Union
 
 import torch
 from torch import distributed as dist
+from torch.distributed._tensor import DTensor, DeviceMesh
 from torch import nn
 from torch.distributed.fsdp import FullStateDictConfig
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
@@ -17,6 +18,7 @@ from fms.datasets.util import SavableDataset
 from fms.utils import generation, print0
 from fms.utils.tokenizers import BaseTokenizer
 
+device_mesh = DeviceMesh("cuda", torch.arange(dist.get_world_size()))
 
 class TrainerPlugin:
     """
@@ -96,12 +98,16 @@ class InferenceValidator(TrainerPlugin):
         training = self.model.training
         self.model.eval()
         with torch.no_grad():
+            if isinstance(self.input_ids, torch.distributed._tensor.DTensor):
+                self.input_ids = self.input_ids.redistribute()
             curtime = datetime.now().strftime("%H:%M.%S")
             prefix = f"{curtime}:{epoch:02d}"
             if step is not None:
                 prefix = prefix + f":{step:04d}"
 
             result = generation.generate(self.model, self.input_ids, use_cache=True)
+            if isinstance(result, torch.distributed._tensor.DTensor):
+                result = result.redistribute()
             result = generation.truncate_after_eos(result, self.eos_token_id)
             result = self.tokenizer.convert_ids_to_tokens(result)
             result = self.tokenizer.convert_tokens_to_string(result)
@@ -301,6 +307,11 @@ class Checkpointer(TrainerPlugin):
         else:
             model_dict = self.model.state_dict()
             optim_dict = self.optimizer.state_dict()
+            
+        if isinstance(model_dict, torch.distributed._tensor.DTensor):
+            model_dict = model_dict.redistribute()
+        if isinstance(optim_dict, torch.distributed._tensor.DTensor):
+            optim_dict = optim_dict.redistribute()
 
         if step is not None:
             file = f"{model_name}_{epoch:03d}_{step+1:05d}"
