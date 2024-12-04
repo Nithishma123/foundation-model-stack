@@ -3,6 +3,7 @@ from typing import Any, Callable, Mapping, Optional
 
 import torch
 import torch.nn as nn
+from torch.distributed._tensor import DeviceMesh, distribute_tensor, Shard
 
 from fms.modules.tp import ShardType, TPModule
 
@@ -109,6 +110,7 @@ def shard_base_linear(
     tp_module: TPModule,
     module_sharding_info: dict[str, LinearModuleShardingInfo],
     param_sharding_info: dict[str, dict[str, LinearParameterShardingInfo]],
+    device_mesh: Optional[DeviceMesh] = None,
 ) -> Optional[set]:
     """Base Tensor Parallel (TP) sharding function for linear layers.
     Using a dictionary of parameter names and unsharded tensors (`tensor_values`),
@@ -138,6 +140,13 @@ def shard_base_linear(
     for module_name, module_info in module_sharding_info.items():
         for param_name, param_info in param_sharding_info[module_name].items():
             module_param = getattr(module_info.linear_module, param_name)
+            if device_mesh:
+                # Shard using DeviceMesh
+                module_param = distribute_tensor(
+                    module_param,
+                    device_mesh,
+                    placements=[Shard(param_info.sharding_dim)]
+                )
             tp_module.sharded_copy(
                 param=module_param,
                 tensor_value=all_params[module_name][param_name],
