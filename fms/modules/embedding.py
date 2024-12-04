@@ -3,6 +3,7 @@ from typing import Dict, List, Optional, Set, Tuple, Union
 
 import torch
 import torch.distributed
+from torch.distributed._tensor import DeviceMesh, distribute_tensor, Shard
 import torch.nn as nn
 from numpy import sign
 from torch.distributed.distributed_c10d import ProcessGroup
@@ -13,7 +14,6 @@ from fms.distributed.tensorparallel import (
     copy_to_tensor_model_parallel_region,
 )
 from fms.modules.tp import TPModule
-
 
 class WordEmbedding(nn.Module):
     """
@@ -157,8 +157,12 @@ class TPWordEmbedding(WordEmbedding, TPModule):
         bias=False,
         debug=False,
         group: Optional[ProcessGroup] = None,
+        device_mesh: Optional[DeviceMesh] = None,  # Add DeviceMesh
+        shard_dim: int = 1,  # Dimension to shard
     ):
         assert torch.distributed.is_initialized()
+        self.device_mesh = device_mesh
+        self.shard_dim = shard_dim
         rank, world_size = distributed.rank_and_world(group)
         assert (
             emb_dim % world_size == 0
@@ -224,18 +228,24 @@ class TPWordEmbedding(WordEmbedding, TPModule):
         used_keys: Set[str] = set()
         weight_count = 1
         emb_weight = self._get_sd_weight(tensor_values, used_keys, ["emb"])
+        self.emb.weight = nn.Parameter(distribute_tensor(emb_weight, device_mesh=self.device_mesh, placements=[Shard(self.shard_dim)]))
+
         if self.abs_pos:
             pos_emb_weight = self._get_sd_weight(tensor_values, used_keys, ["pos_emb"])
+            self.pos_emb.weight = nn.Parameter(distribute_tensor(pos_emb_weight, device_mesh=self.device_mesh, placements=[Shard(self.shard_dim)]))
             weight_count += 1
         if self.reversible and not self.tie_weights:
             head_weight = self._get_sd_weight(
                 tensor_values, used_keys, ["head", "weight"]
             )
+            self.head.weight = nn.Parameter(distribute_tensor(head_weight, device_mesh=self.device_mesh, placements=[Shard(0)]))
+            
             weight_count += 1
             if self.bias:
                 head_bias = self._get_sd_weight(
                     tensor_values, used_keys, ["head", "bias"]
                 )
+                self.head.bias = nn.Parameter(distribute_tensor(head_bias, device_mesh=self.device_mesh, placements=[Shard(0)]))
                 weight_count += 1
 
         # 2. Raise exceptions
@@ -285,9 +295,13 @@ class TPEmbedding(nn.Embedding, TPModule):
         embedding_dim: int,
         *,
         group: Optional[ProcessGroup] = None,
+        device_mesh: Optional[DeviceMesh] = None,  # Add DeviceMesh
+        shard_dim: int = 1,  # Dimension to shard
         **kwargs,
     ):
         assert torch.distributed.is_initialized()
+        self.device_mesh = device_mesh
+        self.shard_dim = shard_dim
         rank, world_size = distributed.rank_and_world(group)
         assert (
             embedding_dim % world_size == 0
@@ -321,6 +335,7 @@ class TPEmbedding(nn.Embedding, TPModule):
         # 1. Grab the weights from tensor_values
         used_keys: Set[str] = set()
         emb_weight = self._get_sd_weight(tensor_values, used_keys, ["weight"])
+        self.weight = nn.Parameter(distribute_tensor(emb_weight, device_mesh=self.device_mesh, placements=[Shard(self.shard_dim)]))
 
         # 2. Raise exceptions
         if len(tensor_values) > 1:
