@@ -173,6 +173,8 @@ def _attn_unfused_to_fused(
             mutable_sd[new_name] = torch.cat(
                 [mutable_sd.pop(w) for w in unfused_weights], dim=0
             )
+            if isinstance(mutable_sd[new_name], torch.distributed.tensor.Tensor):
+                mutable_sd[new_name] = mutable_sd[new_name].redistribute()
     return mutable_sd
 
 
@@ -538,6 +540,10 @@ def _move_to_real_device(
     real_device: torch.device,
     dtype: Optional[torch.dtype] = None,
 ) -> torch.Tensor:
+    if isinstance(param, torch.distributed.tensor.Tensor):  # Handle DTensor
+        if param.device != real_device:
+            param = param.redistribute(torch.distributed.tensor.DeviceMesh(real_device))
+        return param
     if param.device == torch.device("meta"):
         is_parameter = isinstance(param, torch.nn.Parameter)
         param = torch.empty_like(
@@ -595,16 +601,18 @@ def _load_partial_state_dict(
             # into the model
             if not needs_tp_sharding or tp_module is None:
                 param = getattr(target_module, key_steps[-1])
-
-                # cast module parameter to non-meta device
-                if param.device == torch.device("meta"):
-                    param = _move_to_real_device(
-                        param=param,
-                        real_device=tensor_value.device,
-                        dtype=tensor_value.dtype if dtype is None else dtype,
-                    )
-                    setattr(target_module, key_steps[-1], param)
-                    param = getattr(target_module, key_steps[-1])
+                if isinstance(param, torch.distributed.tensor.Tensor):
+                    param = param.redistribute()
+                else:
+                    # cast module parameter to non-meta device
+                    if param.device == torch.device("meta"):
+                        param = _move_to_real_device(
+                            param=param,
+                            real_device=tensor_value.device,
+                            dtype=tensor_value.dtype if dtype is None else dtype,
+                            )
+                        setattr(target_module, key_steps[-1], param)
+                        param = getattr(target_module, key_steps[-1])
                 param.copy_(tensor_value, non_blocking=True)
 
             elif tp_module is not None and tp_module not in seen_tp_modules:
