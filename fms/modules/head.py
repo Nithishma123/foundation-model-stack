@@ -4,7 +4,7 @@ import torch
 import torch.distributed
 import torch.nn as nn
 from torch.distributed.distributed_c10d import ProcessGroup
-
+from torch.distributed._tensor import DeviceMesh, distribute_tensor, Shard
 from fms import distributed
 from fms.distributed.tensorparallel import (
     all_gather_from_tensor_model_parallel_region,
@@ -117,12 +117,14 @@ class TPLinearClassificationHead(LinearClassificationHead, TPModule):
         device=None,
         dtype=None,
         group: Optional[ProcessGroup] = None,
+        device_mesh: Optional[DeviceMesh] = None,
     ):
         assert torch.distributed.is_initialized()
         rank, world_size = distributed.rank_and_world(group)
         assert (
             vocab_size % world_size == 0
         ), "The number of tokens must be divisible by world size"
+        self.device_mesh = device_mesh
         LinearClassificationHead.__init__(
             self,
             emb_dim,
@@ -163,9 +165,24 @@ class TPLinearClassificationHead(LinearClassificationHead, TPModule):
             raise AttributeError(f"Unused weight(s): {', '.join(unused_keys)}")
 
         # 3. Load and shard the weights
-        self.sharded_copy(self.weight, head_weight, 0, [self.world_size])
-        if self.bias != None:
-            self.sharded_copy(self.bias, head_bias, 0, [self.world_size])
+        if self.device_mesh:
+            self.weight = nn.Parameter(
+                torch.distributed._tensor.distribute_tensor(
+                    head_weight,
+                    device_mesh=self.device_mesh,
+                    placements=[torch.distributed._tensor.Shard(0)],
+                    ))
+            if self.bias is not None:
+                self.bias = nn.Parameter(
+                    torch.distributed._tensor.distribute_tensor(
+                        head_bias,
+                        device_mesh=self.device_mesh,
+                        placements=[torch.distributed._tensor.Shard(0)],
+                    ))
+        else:
+            self.sharded_copy(self.weight, head_weight, 0, [self.world_size])
+            if self.bias != None:
+                self.sharded_copy(self.bias, head_bias, 0, [self.world_size])
 
     def forward(self, inp):
         # vocab_idx: b n d if reverse, else b n
