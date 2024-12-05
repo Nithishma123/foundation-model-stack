@@ -146,7 +146,7 @@ class UniformModelParallelStrategy(DistributedStrategy):
         return wrapped
 
 
-class TensorParallelStrategy(DistributedStrategy):
+class DTensorParallelStrategy(DistributedStrategy):
     def __init__(self, group=None, from_meta=False):
         super().__init__(from_meta)
         assert torch.distributed.is_initialized(), "must initialize a process group"
@@ -163,7 +163,7 @@ class TensorParallelStrategy(DistributedStrategy):
 
 from torch.distributed._tensor import distribute_tensor, DeviceMesh, Shard, Replicate
 
-class DTensorParallelStrategy(DistributedStrategy):
+class TensorParallelStrategy(DistributedStrategy):
     def __init__(self, devices: List[int], from_meta=False):
         """
         Initialize DTensorParallelStrategy with specified devices.
