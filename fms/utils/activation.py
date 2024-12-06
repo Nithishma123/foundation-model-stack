@@ -47,8 +47,6 @@ def str_to_activation(activation_str: str) -> nn.Module:
     if activation_str not in __ACT_2_CLS.keys():
         raise ValueError(f"activation string must be one of {__ACT_2_CLS.keys()}")
     activation_module = __ACT_2_CLS[activation_str]()
-    if torch.distributed.is_initialized():
-        activation_module = torch.nn.parallel.DistributedDataParallel(activation_module)
     return activation_module
 
 

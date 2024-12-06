@@ -6,7 +6,7 @@ import torch.distributed
 from torch import Tensor, nn
 from torch.distributed.distributed_c10d import ProcessGroup
 from torch.nn import functional as F
-from torch.distributed._tensor import DeviceMesh, distribute_tensor, Shard
+from torch.distributed.tensor import DeviceMesh, distribute_tensor, Shard
 
 from fms import distributed
 from fms.distributed.tensorparallel import (
@@ -36,13 +36,11 @@ class QKV(nn.Module, metaclass=abc.ABCMeta):
         use_bias: bool,
         linear_config: Optional[Mapping[str, Any]] = None,
         device_mesh: Optional[DeviceMesh] = None,
-        shard_dim: Optional[int] = None,
         *args,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self.device_mesh = device_mesh
-        self.shard_dim = shard_dim
         self.emb_dim = emb_dim
         self.nheads = nheads
         self.kvheads = kvheads
@@ -96,6 +94,7 @@ class UnfusedQKV(QKV):
         emb_v_per_head: int,
         use_bias: bool,
         linear_config: Optional[Mapping[str, Any]] = None,
+        device_mesh: Optional[DeviceMesh] = None,
         *args,
         **kwargs,
     ):
@@ -107,6 +106,7 @@ class UnfusedQKV(QKV):
             emb_v_per_head,
             use_bias,
             linear_config,
+            device_mesh,
             *args,
             **kwargs,
         )
@@ -147,10 +147,10 @@ class UnfusedQKV(QKV):
             raise ValueError(
                 "both k and v must either be given as tensors or both None"
             )
-        if self.device_mesh and self.shard_dim is not None:
-            q = distribute_tensor(q, device_mesh=self.device_mesh, placements=[Shard(self.shard_dim)])
-            k = distribute_tensor(k, device_mesh=self.device_mesh, placements=[Shard(self.shard_dim)])
-            v = distribute_tensor(v, device_mesh=self.device_mesh, placements=[Shard(self.shard_dim)])
+        if self.device_mesh is not None:
+            q = distribute_tensor(q, device_mesh=self.device_mesh, placements=[Shard(0)])
+            k = distribute_tensor(k, device_mesh=self.device_mesh, placements=[Shard(0)])
+            v = distribute_tensor(v, device_mesh=self.device_mesh, placements=[Shard(0)])
 
         # b x h x qlen x ds
         queries = self.query(q)
@@ -173,6 +173,7 @@ class FusedQKV(QKV):
         emb_v_per_head: int,
         use_bias: bool,
         linear_config: Optional[Mapping[str, Any]] = None,
+        device_mesh: Optional[DeviceMesh] = None,
         *args,
         **kwargs,
     ):
@@ -184,6 +185,7 @@ class FusedQKV(QKV):
             emb_v_per_head,
             use_bias,
             linear_config,
+            device_mesh,
             *args,
             **kwargs,
         )
@@ -278,6 +280,7 @@ class MultiHeadAttention(nn.Module):
         fused: bool = True,
         linear_config: Optional[Mapping[str, Any]] = None,
         scale_factor: Optional[float] = None,
+        device_mesh: Optional[DeviceMesh] = None,
     ):
         super(MultiHeadAttention, self).__init__()
         self.nheads = nheads
@@ -291,6 +294,7 @@ class MultiHeadAttention(nn.Module):
         self.linear_config = linear_config
         self.linear_type = get_linear_type(linear_config)
         self.scale_factor = scale_factor
+        self.device_mesh = device_mesh
 
         self.in_proj: QKV = (FusedQKV if self.fused else UnfusedQKV)(
             self.emb_dim,
@@ -300,6 +304,7 @@ class MultiHeadAttention(nn.Module):
             self.emb_v_per_head,
             self.use_bias,
             linear_config=linear_config,
+            device_mesh = device_mesh
         )
 
         self.dense = get_linear(
@@ -364,12 +369,12 @@ class MultiHeadAttention(nn.Module):
         """
         # q, k, v: batch_size x seq_len x emb_dim
         # mask: batch_size x seq_len x seq_len
-        if self.device_mesh and self.shard_dim is not None:
-            q = distribute_tensor(q, device_mesh=self.device_mesh, placements=[Shard(self.shard_dim)])
+        if self.device_mesh is not None:
+            q = distribute_tensor(q, self.device_mesh, [Shard(0)])
             if k is not None:
-                k = distribute_tensor(k, device_mesh=self.device_mesh, placements=[Shard(self.shard_dim)])
+                k = distribute_tensor(k, self.device_mesh, [Shard(0)])
             if v is not None:
-                v = distribute_tensor(v, device_mesh=self.device_mesh, placements=[Shard(self.shard_dim)])
+                v = distribute_tensor(v, self.device_mesh, [Shard(0)])
         batch_size, q_len, _ = q.size()
 
         # if this is self attention, we always recompute
@@ -614,7 +619,8 @@ class TPMultiHeadAttention(MultiHeadAttention, TPModule):
         return tp_mha
 
     def _copy_to_tp_region(self,q: torch.Tensor,k: Optional[torch.Tensor] = None,v: Optional[torch.Tensor] = None,):
-        if self.device_mesh and self.shard_dim is not None:
+        print(self.device_mesh)
+        if self.device_mesh is not None:
             q = distribute_tensor(q, device_mesh=self.device_mesh, placements=[Shard(self.shard_dim)])
             if k is not None:
                 k = distribute_tensor(k, device_mesh=self.device_mesh, placements=[Shard(self.shard_dim)])
