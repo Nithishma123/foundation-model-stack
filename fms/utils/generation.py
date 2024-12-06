@@ -4,7 +4,7 @@ from typing import Any, Callable, List, MutableMapping, Optional, Tuple, Union
 
 import torch
 import torch.nn.functional as F
-from torch.distributed.tensor import Tensor as DTensor
+from torch.distributed.tensor import DTensor
 
 logger = logging.getLogger(__name__)
 

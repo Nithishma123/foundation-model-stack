@@ -5,7 +5,8 @@ from typing import Any, Callable, Dict, MutableMapping, Optional, Tuple, Union
 
 import torch
 from torch import nn
-from torch.distributed._tensor import DeviceMesh, Shard, distribute_tensor
+from torch.distributed.tensor import DeviceMesh, Shard, distribute_tensor
+from torch.distributed.tensor.parallel import parallelize_module, SequenceParallel
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     CheckpointImpl,
     apply_activation_checkpointing,
@@ -300,8 +301,6 @@ def get_model(
     distributed_strategy: Optional[str] = None,
     checkpoint_sharding: Optional[str] = None,
     group: Optional[ProcessGroup] = None,
-    device_mesh: Optional[DeviceMesh] = None,
-    shard_dim: Optional[int] = None,
     **kwargs,
 ):
     """
@@ -429,16 +428,16 @@ def get_model(
     def model_wrap(model):
         if _is_dp(distributed_strategy):
             return _fsdp_wrap(model, distributed_strategy, device, rank == 0)
-        elif distributed_strategy == "dtensor" and device_mesh and shard_dim is not None:
-            model = distribute_tensor(
-                model,
-                device_mesh=device_mesh,
-                placements=[Shard(shard_dim)]
-                )
+        elif distributed_strategy == "tp":
+            device_mesh = extra_args["distributed_strategy"].device_mesh
+            model = parallelize_module(model, device_mesh, {"norm": SequenceParallel()})
         return model
 
     if not pre_load:
         fms_model = model_wrap(fms_model)
+    
+    if distributed_strategy == "tp":
+        fms_model = parallelize_module(fms_model, extra_args["distributed_strategy"].device_mesh, {"norm": SequenceParallel()})
 
     if len(lazy_sd):
         serialization.load_state_dict_into_model(

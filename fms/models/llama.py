@@ -5,13 +5,12 @@ from typing import Any, List, Mapping, Optional, Tuple
 
 import torch
 import torch.nn as nn
-
+from torch.distributed.tensor import DeviceMesh
 from fms import models
 from fms.distributed.strategy import (
     DistributedStrategy,
     NoOpStrategy,
-    TensorParallelStrategy,
-    DTensorParallelStrategy
+    TensorParallelStrategy
 )
 from fms.modules.attention import MultiHeadAttention
 from fms.modules.embedding import WordEmbedding
@@ -22,7 +21,10 @@ from fms.utils import serialization
 from fms.utils.activation import str_to_activation
 from fms.utils.config import ModelConfig
 from fms.utils.tokenizers import _has_hf
-from torch.distributed._tensor import DeviceMesh, Shard, distribute_tensor
+from torch.distributed.tensor.parallel import (
+    SequenceParallel,
+    parallelize_module,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +189,6 @@ class LLaMA(nn.Module):
         self.width = self.config.emb_dim
         self.pad_id = self.config.pad_id
         self.max_expected_seq_len = self.config.max_expected_seq_len
-
         shared = WordEmbedding(
             self.config.src_vocab_size,
             self.config.emb_dim,
@@ -335,17 +336,9 @@ class LLaMA(nn.Module):
             + [buffer.device for buffer in self.buffers()]
         ):
             self.rot_emb.compute_freqs_cis(device, self.config.max_expected_seq_len)
-        if isinstance(self.distributed_strategy, DTensorParallelStrategy):
+        if isinstance(self.distributed_strategy, TensorParallelStrategy):
             device_mesh = self.distributed_strategy.device_mesh
-            shard_dim = self.distributed_strategy.shard_dim
-            for layer in self.layers:
-                for name, param in layer.named_parameters(recurse=False):
-                    if param.device == torch.device("meta"):
-                        param.data = distribute_tensor(
-                        torch.empty_like(param, device="cuda"),
-                        device_mesh=device_mesh,
-                        placements=[Shard(shard_dim)],
-                    )
+            self.layers = parallelize_module(self.layers, device_mesh, {"norm": SequenceParallel()})
 
     def _helper(
         self,

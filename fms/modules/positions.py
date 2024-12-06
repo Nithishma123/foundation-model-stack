@@ -189,12 +189,6 @@ class RotaryEmbedding(PositionEncoder):
             ratio
             ** (torch.arange(0, dim, 2, device=device)[: (dim // 2)].float() / dim)
         )
-        if torch.distributed.is_initialized():
-            freqs = DTensor.from_local(
-            freqs,
-            Shard(0),  # Shard along the sequence length
-            mesh=torch.distributed.get_device_mesh(),
-        )
 
         t = torch.arange(max_seq_len, device=device, dtype=freqs.dtype)
         freqs = torch.outer(t, freqs).float()

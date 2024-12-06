@@ -165,7 +165,6 @@ if world_size > 1:
 
 print("loading model")
 model = models.get_model(args.architecture, args.variant, device_type=args.device_type)
-
 if args.unfuse_weights:
     print("unfusing weights")
     model = fusion.apply_unfuse_weights(model)

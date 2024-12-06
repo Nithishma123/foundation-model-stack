@@ -3,7 +3,7 @@ from typing import Any, Dict, Mapping, Optional, Union
 
 import torch
 import torch.nn as nn
-from torch.distributed.tensor import Tensor as DTensor
+import torch.distributed
 
 from fms.modules.linear import (
     LinearModuleShardingInfo,
@@ -113,7 +113,7 @@ def get_gptq_linear(
 
 
 def shard_gptq_linear(
-    tensor_values: Dict[str, Union[torch.Tensor, DTensor]],
+    tensor_values: Dict[str, Union[torch.Tensor, torch.distributed.tensor.DTensor]],
     tp_module: TPModule,
     module_sharding_info: Dict[str, LinearModuleShardingInfo],
 ) -> Optional[set]:

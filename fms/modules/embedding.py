@@ -157,10 +157,10 @@ class TPWordEmbedding(WordEmbedding, TPModule):
         bias=False,
         debug=False,
         group: Optional[ProcessGroup] = None,
-        device_mesh: Optional[DeviceMesh] = None,  # Add DeviceMesh
-        shard_dim: int = 1,  # Dimension to shard
+        device_mesh: Optional[DeviceMesh] = None,
+        shard_dim: int = 1,
     ):
-        assert torch.distributed.is_initialized()
+        #assert torch.distributed.is_initialized()
         self.device_mesh = device_mesh
         self.shard_dim = shard_dim
         rank, world_size = distributed.rank_and_world(group)
@@ -206,6 +206,8 @@ class TPWordEmbedding(WordEmbedding, TPModule):
 
     @staticmethod
     def import_module(we: WordEmbedding, group: ProcessGroup) -> "TPWordEmbedding":
+        world_size = torch.distributed.get_world_size()
+        device_mesh = torch.distributed.init_device_mesh(tp_device.type, (world_size,))
         tp_we = TPWordEmbedding(
             vocab_size=we.vocab_size,
             emb_dim=we.emb_dim,
@@ -217,6 +219,7 @@ class TPWordEmbedding(WordEmbedding, TPModule):
             bias=we.bias,
             debug=we.debug,
             group=group,
+            device_mesh = device_mesh,
         )
         return tp_we
 
