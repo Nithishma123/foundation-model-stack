@@ -21,9 +21,14 @@ from fms.utils import serialization
 from fms.utils.activation import str_to_activation
 from fms.utils.config import ModelConfig
 from fms.utils.tokenizers import _has_hf
+from torch.distributed.device_mesh import init_device_mesh
+from torch.distributed._tensor import Shard, Replicate
 from torch.distributed.tensor.parallel import (
-    SequenceParallel,
     parallelize_module,
+    ColwiseParallel,
+    RowwiseParallel,
+    PrepareModuleInput,
+    SequenceParallel
 )
 
 logger = logging.getLogger(__name__)
@@ -730,7 +735,7 @@ serialization.register_adapter(
 )
 
 
-def convert_hf_llama(hf_model: "LlamaForCausalLM", device_mesh: Optional[DeviceMesh] = None, shard_dim: Optional[int] = None) -> LLaMA:  # type: ignore
+def convert_hf_llama(hf_model: "LlamaForCausalLM", dp_size: int = 0, tp_size: int = 0, use_tensor_parallel: bool = False) -> LLaMA:  # type: ignore
     """
     Convert a Llama huggingface model to an fms model
 
@@ -749,6 +754,9 @@ def convert_hf_llama(hf_model: "LlamaForCausalLM", device_mesh: Optional[DeviceM
         raise ImportError(
             "in order to convert huggingface weights, you need to have transformers installed"
         )
+    
+    if use_tensor_parallel and (not dp_size and not tp_size):
+        raise ValueError(" dp_size and tp_size must be greater than 0 if using flag user_tensor_parallel")
 
     import re
 
@@ -790,7 +798,7 @@ def convert_hf_llama(hf_model: "LlamaForCausalLM", device_mesh: Optional[DeviceM
         new_name = name
         for pattern, repl in replacements:
             new_name = re.sub(pattern, repl, new_name)
-        if device_mesh is not None:
+        if device_mesh is not None and not use_tensor_parallel:
             new_sd[new_name] = distribute_tensor(
                 param, device_mesh=device_mesh, placements=[Shard(shard_dim)]
             )
@@ -818,5 +826,66 @@ def convert_hf_llama(hf_model: "LlamaForCausalLM", device_mesh: Optional[DeviceM
             .reshape(*k.size())
         )
         layer.attn.key.weight.data = k
+
+    if use_tensor_parallel and device_mesh is not None:
+        device_mesh = init_device_mesh("cuda", (dp_size, tp_size), mesh_dim_names=("dp", "tp"))
+
+        model = parallelize_module(
+            model,
+            device_mesh["tp"],
+            {
+                "tok_embeddings": RowwiseParallel(input_layouts=Replicate(), output_layouts=Shard(1)),
+                "norm": SequenceParallel(),
+                "output": ColwiseParallel(input_layouts=Shard(1), output_layouts=Replicate()),
+            }
+        )
+
+        # Apply tensor parallelism to transformer layers
+        for layer_id, transformer_block in enumerate(model.layers):
+            layer_tp_plan = {
+                # Normalization layers - SequenceParallel to distribute across sequence dimension
+                "dec_norm": SequenceParallel(),  # Replaces "norm" -> "dec_norm"
+
+                # Attention layers (query, key, value, and output projections)
+                "attn": PrepareModuleInput(
+                    input_layouts=(Shard(1), None),  # Shard input on the sequence dimension
+                    desired_input_layouts=(Replicate(), None),  # Replicate for attention computation
+                ),
+                
+                # Query, Key, Value projections in the attention mechanism
+                "attn.query": ColwiseParallel(),  # Replaces "self_attn.q_proj" -> "attn.query"
+                "attn.key": ColwiseParallel(),  # Replaces "self_attn.k_proj" -> "attn.key"
+                "attn.value": ColwiseParallel(),  # Replaces "self_attn.v_proj" -> "attn.value"
+                
+                # Output of attention projections (typically linear layers)
+                "attn.dense": RowwiseParallel(output_layouts=Shard(1)),  # Replaces "self_attn.o_proj" -> "attn.dense"
+
+                # Feed-forward layers and normalization layers
+                "ff_ln": SequenceParallel(),  # Replaces "post_attention_layernorm" -> "ff_ln"
+                "ff_sub_layer": PrepareModuleInput(
+                    input_layouts=(Shard(1),),  # Shard on the sequence dimension
+                    desired_input_layouts=(Replicate(),),  # Replicate the output across devices
+                ),
+                
+                # Feed-forward sub-layers
+                "ff_sub_layer.wg": ColwiseParallel(),  # Replaces "mlp.gate_proj" -> "ff_sub_layer.wg"
+                "ff_sub_layer.w1": RowwiseParallel(output_layouts=Shard(1)),  # Replaces "mlp.up_proj" -> "ff_sub_layer.w1"
+                "ff_sub_layer.w2": ColwiseParallel(),  # Replaces "mlp.down_proj" -> "ff_sub_layer.w2"
+            }
+
+            
+
+            # Adjust attention heads based on the parallelism
+            attn_layer = transformer_block.attention
+            attn_layer.n_heads = attn_layer.n_heads // device_mesh["tp"].size()  # Divide heads across TP
+            attn_layer.n_kv_heads = attn_layer.n_kv_heads // device_mesh["tp"].size()
+
+            # Parallelize the transformer block
+            parallelize_module(
+                module=transformer_block,
+                device_mesh=device_mesh["tp"],
+                parallelize_plan=layer_tp_plan
+            )
+
 
     return model
