@@ -22,6 +22,15 @@ from fms.distributed.strategy import (
     UniformModelParallelStrategy,
 )
 from fms.utils import fusion, serialization
+from torch.distributed.device_mesh import init_device_mesh
+from torch.distributed._tensor import Shard, Replicate
+from torch.distributed.tensor.parallel import (
+    parallelize_module,
+    ColwiseParallel,
+    RowwiseParallel,
+    PrepareModuleInput,
+    SequenceParallel
+)
 
 
 logger = logging.getLogger(__name__)
@@ -436,8 +445,72 @@ def get_model(
     if not pre_load:
         fms_model = model_wrap(fms_model)
     
+    # if use_tensor_parallel and (not dp_size and not tp_size):
+    #     raise ValueError(" dp_size and tp_size must be greater than 0 if using flag user_tensor_parallel")
+
+    #@Nithishma please just change these hardcode values as you see fit.
+    dp_size: int = 2
+    tp_size: int = 2
     if distributed_strategy == "tp":
-        fms_model = parallelize_module(fms_model, extra_args["distributed_strategy"].device_mesh, {"norm": SequenceParallel()})
+        # fms_model = parallelize_module(fms_model, extra_args["distributed_strategy"].device_mesh, {"norm": SequenceParallel()})
+        device_mesh = init_device_mesh("cuda", (dp_size, tp_size), mesh_dim_names=("dp", "tp"))
+
+        model = parallelize_module(
+            model,
+            device_mesh["tp"],
+            {
+                "tok_embeddings": RowwiseParallel(input_layouts=Replicate(), output_layouts=Shard(1)),
+                "norm": SequenceParallel(),
+                "output": ColwiseParallel(input_layouts=Shard(1), output_layouts=Replicate()),
+            }
+        )
+
+        # Apply tensor parallelism to transformer layers
+        for layer_id, transformer_block in enumerate(model.layers):
+            layer_tp_plan = {
+                # Normalization layers - SequenceParallel to distribute across sequence dimension
+                "dec_norm": SequenceParallel(),  # Replaces "norm" -> "dec_norm"
+
+                # Attention layers (query, key, value, and output projections)
+                "attn": PrepareModuleInput(
+                    input_layouts=(Shard(1), None),  # Shard input on the sequence dimension
+                    desired_input_layouts=(Replicate(), None),  # Replicate for attention computation
+                ),
+                
+                # Query, Key, Value projections in the attention mechanism
+                "attn.query": ColwiseParallel(),  # Replaces "self_attn.q_proj" -> "attn.query"
+                "attn.key": ColwiseParallel(),  # Replaces "self_attn.k_proj" -> "attn.key"
+                "attn.value": ColwiseParallel(),  # Replaces "self_attn.v_proj" -> "attn.value"
+                
+                # Output of attention projections (typically linear layers)
+                "attn.dense": RowwiseParallel(output_layouts=Shard(1)),  # Replaces "self_attn.o_proj" -> "attn.dense"
+
+                # Feed-forward layers and normalization layers
+                "ff_ln": SequenceParallel(),  # Replaces "post_attention_layernorm" -> "ff_ln"
+                "ff_sub_layer": PrepareModuleInput(
+                    input_layouts=(Shard(1),),  # Shard on the sequence dimension
+                    desired_input_layouts=(Replicate(),),  # Replicate the output across devices
+                ),
+                
+                # Feed-forward sub-layers
+                "ff_sub_layer.wg": ColwiseParallel(),  # Replaces "mlp.gate_proj" -> "ff_sub_layer.wg"
+                "ff_sub_layer.w1": RowwiseParallel(output_layouts=Shard(1)),  # Replaces "mlp.up_proj" -> "ff_sub_layer.w1"
+                "ff_sub_layer.w2": ColwiseParallel(),  # Replaces "mlp.down_proj" -> "ff_sub_layer.w2"
+            }
+
+            
+
+            # Adjust attention heads based on the parallelism
+            attn_layer = transformer_block.attention
+            attn_layer.n_heads = attn_layer.n_heads // device_mesh["tp"].size()  # Divide heads across TP
+            attn_layer.n_kv_heads = attn_layer.n_kv_heads // device_mesh["tp"].size()
+
+            # Parallelize the transformer block
+            parallelize_module(
+                module=transformer_block,
+                device_mesh=device_mesh["tp"],
+                parallelize_plan=layer_tp_plan
+            )
 
     if len(lazy_sd):
         serialization.load_state_dict_into_model(
