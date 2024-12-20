@@ -2,12 +2,58 @@
 
 Foundation Model Stack is a collection of components for development, inference, training, and tuning of foundation models leveraging PyTorch native components. For inference optimizations we aim to support PyTorch compile, accelerated transformers, and tensor parallelism. At training time we aim to support FSDP, accelerated transformers, and PyTorch compile. To enable these optimizations, we will provide reimplementations of several popular model architectures starting with Llama and GPT-BigCode. 
 
-## Models Supported
-| Model family | Inference | Tuning and Training |
-|--------------| ---------- | ------------------ |
-| LLaMA        | :heavy_check_mark: | :heavy_check_mark: |
-| GPT-BigCode  | :heavy_check_mark: | :x: |
-| RoBERTa      | :heavy_check_mark: | :x: |
+
+# Project Description
+This project focuses on modernizing the Tensor-Parallel (TP) implementation in IBM's Foundation Model Stack (FMS) using PyTorch DTensor APIs. The goal is to address scalability and memory bottlenecks, enhance compatibility with modern distributed computation frameworks, and lay the foundation for future scalability by integrating Sequence Parallelism.
+
+The updated implementation supports large-scale language models like LLaMA and Granite, ensuring efficient resource utilization, compatibility with IBM tools, and better performance for training and inference.
+
+### **Outline of the Code Repository**
+
+Below is the outline of the repository, including the updated files and their purposes:
+
+```
+├── fms/
+│   ├── distributed/
+│   │   ├── strategy.py          # Updated to support Tensor Parallelism
+│   │   └── ...                  # Other distributed strategy-related files
+│   ├── modules/
+│   │   ├── attention.py         # Updated to incorporate Tensor Parallel changes
+│   │   ├── feedforward.py       # Updated to include Tensor Parallel logic
+│   │   └── ...                  # Other module-specific files
+│   └── ...                      # Remaining FMS framework files
+├── utils/
+│   ├── tp_plan.py               # Added for defining Tensor Parallel plans and configurations
+│   └── ...                      # Utility scripts for benchmarking, logging, etc.
+├── benchmarks/                  # Benchmarking scripts for performance evaluation
+│   └── benchmark_inference.py   # Script for running inference benchmarks
+├── configs/                     # Configuration files for model and environment setups
+├── data/                        # Mock data for testing and benchmarking
+├── results/                     # Generated results including memory usage and speed
+└── README.md                    # Project documentation
+```
+
+### **Key Updates**
+1. **fms/distributed/strategy.py**:
+   - Enhanced to support Tensor Parallelism using PyTorch DTensor APIs.
+2. **fms/modules/attention.py**:
+   - Updated to implement Tensor Parallel changes for attention mechanisms.
+3. **fms/modules/feedforward.py**:
+   - Modified to support Tensor Parallel logic in feedforward layers.
+4. **utils/tp_plan.py**:
+   - Newly added to manage Tensor Parallel plans and configurations.
+5. **scripts/benchmark_inference.py**:
+   - Newly added profiler to track memory usage.
+
+This structure highlights the key files modified or added for the Tensor Parallel modernization.
+
+# Example commands to execute the code
+CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --nproc_per_node=4 ./scripts/benchmark_inference.py --architecture=llama --variant=2-7b --tokenizer=~/models/tokenizer.model --batch_size=2 --seq_len=512 --skip_correctness_check
+
+# Results (including charts/tables) and your observations
+
+
+
 
 
 ## Installation
