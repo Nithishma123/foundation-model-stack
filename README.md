@@ -2,6 +2,12 @@
 
 Foundation Model Stack is a collection of components for development, inference, training, and tuning of foundation models leveraging PyTorch native components. For inference optimizations we aim to support PyTorch compile, accelerated transformers, and tensor parallelism. At training time we aim to support FSDP, accelerated transformers, and PyTorch compile. To enable these optimizations, we will provide reimplementations of several popular model architectures starting with Llama and GPT-BigCode. 
 
+# Project Description
+This project focuses on modernizing the Tensor-Parallel (TP) implementation in IBM's Foundation Model Stack (FMS) using PyTorch DTensor APIs. The goal is to address scalability and memory bottlenecks, enhance compatibility with modern distributed computation frameworks, and lay the foundation for future scalability by integrating Sequence Parallelism.
+
+The updated implementation supports large-scale language models like LLaMA and Granite, ensuring efficient resource utilization, compatibility with IBM tools, and better performance for training and inference.
+
+
 ## Models Supported
 | Model family | Inference | Tuning and Training |
 |--------------| ---------- | ------------------ |
