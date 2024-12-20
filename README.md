@@ -79,6 +79,47 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --nproc_per_node=4 ./scripts/benchmark_inf
 |                      | TP FMS                    | 140.56 ms      | 520.62 ms        | 138.98 ms      | 591.14 ms        | 24.00 ms       | 468.72 ms        | 23.57 ms       | 519.03 ms        |
 
 ---
+### Inference Speed for Granite - 8B
+
+| **Sequence Length** | **Benchmarked Repository** | **Uncompiled Single Token Generation** | **Uncompiled End-to-End Sequence Generation** | **Compiled Single Token Generation** | **Compiled End-to-End Sequence Generation** |
+|----------------------|----------------------------|-----------------------------------------|-----------------------------------------------|---------------------------------------|---------------------------------------------|
+|                      |                            | **Cached**     | **Uncached**     | **Cached**     | **Uncached**     | **Cached**     | **Uncached**     | **Cached**     | **Uncached**     |
+| **256**              | IBM FMS                   | 75.71 ms       | 163.55 ms        | 73.55 ms       | 237.83 ms        | 28.05 ms       | 153.32 ms        | 27.26 ms       | 221.50 ms        |
+|                      | TP FMS                    | 167.36 ms      | 173.43 ms        | 165.63 ms      | 237.35 ms        | 28.20 ms       | 154.70 ms        | 28.56 ms       | 220.49 ms        |
+| **512**              | IBM FMS                   | 76.02 ms       | 303.16 ms        | 74.60 ms       | 389.98 ms        | 27.79 ms       | 283.00 ms        | 27.69 ms       | 362.11 ms        |
+|                      | TP FMS                    | 169.85 ms      | 300.46 ms        | 168.57 ms      | 386.65 ms        | 28.69 ms       | 281.39 ms        | 29.19 ms       | 358.90 ms        |
+| **1024**             | IBM FMS                   | 75.93 ms       | 648.20 ms        | 76.03 ms       | 746.85 ms        | 28.04 ms       | 576.15 ms        | 28.56 ms       | 653.90 ms        |
+|                      | TP FMS                    | 168.26 ms      | 648.20 ms        | 168.08 ms      | 744.68 ms        | 28.21 ms       | 578.60 ms        | 29.82 ms       | 652.29 ms        |
+
+---
+
+### Memory Performance for Llama - 7B
+
+| **SEQ LEN** | **REPO**   | **Uncompiled Single Token Generation**  | **Uncompiled End-to-End Sequence Generation**  | **Compiled Single Token Generation**  | **Compiled End-to-End Sequence Generation**  |
+|-------------|------------|------------------------------------------|------------------------------------------------|---------------------------------------|----------------------------------------------|
+|             |            | **Cached Allocated** | **Cached Reserved** | **Uncached Allocated** | **Uncached Reserved** | **Cached Allocated** | **Cached Reserved** | **Uncached Allocated** | **Uncached Reserved** |
+| **256**     | IBM FMS    | 3.76 GB             | 4.13 GB             | 3.71 GB                | 4.13 GB                | 3.97 GB             | 4.13 GB             | 3.91 GB                | 6.66 GB                |
+|             | TP FMS     | 3.94 GB             | 4.20 GB             | 3.90 GB                | 4.20 GB                | 4.14 GB             | 4.20 GB             | 4.00 GB                | 5.84 GB                |
+| **512**     | IBM FMS    | 3.97 GB             | 4.80 GB             | 3.89 GB                | 4.80 GB                | 4.31 GB             | 4.82 GB             | 4.17 GB                | 8.71 GB                |
+|             | TP FMS     | 4.17 GB             | 4.80 GB             | 4.09 GB                | 4.80 GB                | 4.50 GB             | 4.80 GB             | 4.24 GB                | 7.51 GB                |
+| **1024**    | IBM FMS    | 4.51 GB             | 6.22 GB             | 4.34 GB                | 6.32 GB                | 5.18 GB             | 6.32 GB             | 4.79 GB                | 13.65 GB               |
+|             | TP FMS     | 4.70 GB             | 6.23 GB             | 4.55 GB                | 6.22 GB                | 5.37 GB             | 6.25 GB             | 4.78 GB                | 11.41 GB               |
+
+---
+
+### Memory Performance for Granite - 8B
+
+| **SEQ LEN** | **REPO**   | **Uncompiled Single Token Generation**  | **Uncompiled End-to-End Sequence Generation**  | **Compiled Single Token Generation**  | **Compiled End-to-End Sequence Generation**  |
+|-------------|------------|------------------------------------------|------------------------------------------------|---------------------------------------|----------------------------------------------|
+|             |            | **Cached Allocated** | **Cached Reserved** | **Uncached Allocated** | **Uncached Reserved** | **Cached Allocated** | **Cached Reserved** | **Uncached Allocated** | **Uncached Reserved** |
+| **256**     | IBM FMS    | 4.58 GB             | 5.04 GB             | 4.59 GB                | 5.05 GB                | 4.76 GB             | 5.05 GB             | 4.87 GB                | 6.58 GB                |
+|             | TP FMS     | 4.57 GB             | 4.99 GB             | 4.59 GB                | 4.99 GB                | 4.75 GB             | 4.99 GB             | 4.86 GB                | 6.22 GB                |
+| **512**     | IBM FMS    | 4.68 GB             | 5.66 GB             | 4.69 GB                | 5.66 GB                | 5.00 GB             | 5.67 GB             | 5.10 GB                | 12.05 GB               |
+|             | TP FMS     | 4.69 GB             | 5.58 GB             | 4.70 GB                | 5.60 GB                | 5.00 GB             | 5.58 GB             | 5.11 GB                | 14.63 GB               |
+| **1024**    | IBM FMS    | 4.94 GB             | 6.61 GB             | 4.95 GB                | 6.61 GB                | 5.56 GB             | 6.61 GB             | 5.62 GB                | 22.58 GB               |
+|             | TP FMS     | 4.94 GB             | 6.57 GB             | 4.96 GB                | 6.59 GB                | 5.56 GB             | 6.59 GB             | 5.60 GB                | 22.57 GB               |
+
+---
 
 ### Notes:
 - **Cached**: Repeated runs leveraging cached data for faster execution.
