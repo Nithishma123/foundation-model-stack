@@ -64,6 +64,28 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --nproc_per_node=4 ./scripts/benchmark_inf
    - Challenges: Communication costs remain a bottleneck, particularly for small sequence lengths.
 
 
+## Performance Benchmark Results
+
+### Inference Speed for Llama - 7B
+
+| **Sequence Length** | **Benchmarked Repository** | **Uncompiled Single Token Generation** | **Uncompiled End-to-End Sequence Generation** | **Compiled Single Token Generation** | **Compiled End-to-End Sequence Generation** |
+|----------------------|----------------------------|-----------------------------------------|-----------------------------------------------|---------------------------------------|---------------------------------------------|
+|                      |                            | **Cached**     | **Uncached**     | **Cached**     | **Uncached**     | **Cached**     | **Uncached**     | **Cached**     | **Uncached**     |
+| **256**              | IBM FMS                   | 54.26 ms       | 127.07 ms        | 54.21 ms       | 194.23 ms        | 19.48 ms       | 120.00 ms        | 20.12 ms       | 181.42 ms        |
+|                      | TP FMS                    | 141.83 ms      | 148.56 ms        | 137.17 ms      | 189.05 ms        | 22.34 ms       | 123.64 ms        | 22.28 ms       | 175.24 ms        |
+| **512**              | IBM FMS                   | 54.17 ms       | 245.07 ms        | 54.63 ms       | 318.71 ms        | 19.43 ms       | 230.54 ms        | 20.43 ms       | 298.40 ms        |
+|                      | TP FMS                    | 141.09 ms      | 246.47 ms        | 136.77 ms      | 305.35 ms        | 23.03 ms       | 235.35 ms        | 22.68 ms       | 286.20 ms        |
+| **1024**             | IBM FMS                   | 54.45 ms       | 518.54 ms        | 56.11 ms       | 613.34 ms        | 20.50 ms       | 464.63 ms        | 21.55 ms       | 539.72 ms        |
+|                      | TP FMS                    | 140.56 ms      | 520.62 ms        | 138.98 ms      | 591.14 ms        | 24.00 ms       | 468.72 ms        | 23.57 ms       | 519.03 ms        |
+
+---
+
+### Notes:
+- **Cached**: Repeated runs leveraging cached data for faster execution.
+- **Uncached**: Fresh runs without caching.
+- **IBM FMS**: Baseline results from the existing IBM Foundation Model Stack implementation.
+- **TP FMS**: Results from the modernized Tensor Parallel implementation.
+
 ----------------------------------------------------------------------------------------------
 ## Models Supported
 | Model family | Inference | Tuning and Training |
