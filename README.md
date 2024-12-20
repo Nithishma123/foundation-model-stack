@@ -45,7 +45,9 @@ Below is the outline of the repository, including the updated files and their pu
 This structure highlights the key files modified or added for the Tensor Parallel modernization.
 
 # Example commands to execute the code
+```
 CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --nproc_per_node=4 ./scripts/benchmark_inference.py --architecture=llama --variant=2-7b --tokenizer=~/models/tokenizer.model --batch_size=2 --seq_len=512 --skip_correctness_check
+```
 
 # Results (including charts/tables) and your observations
 
@@ -62,6 +64,17 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 torchrun --nproc_per_node=4 ./scripts/benchmark_inf
 3. Observations
    - Scalability: The modernized implementation supports hybrid parallelism and lays the groundwork for integrating Sequence Parallelism.
    - Challenges: Communication costs remain a bottleneck, particularly for small sequence lengths.
+
+
+
+[!Inference Speed for Llama-7B](images/inferece_llama.png)
+
+[!Inference Speed for Granite-8B](images/inferece_granite.png)
+
+[!Memory Performance for Llama-7B](images/memory_llama.png)
+
+[!Memory Performance for Granite-8B](images/memory_granite.png)
+
 
 
 ----------------------------------------------------------------------------------------------
